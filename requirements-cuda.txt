@@ -1,0 +1,37 @@
+# ==== CUDA 12.4 环境（只装 wheel）====
+--extra-index-url https://download.pytorch.org/whl/cu124
+--only-binary :all:
+
+numpy>=1.26,<2.4
+scikit-learn==1.4.2
+datasets>=2.18.0
+transformers>=4.38.0
+
+# PyTorch + CUDA 12.4
+torch==2.8.0+cu124
+
+# 如果你是 CentOS7/旧 glibc，强烈建议跳过 xformers（容易装不上）
+# xformers==0.0.29.post2
+
+# vLLM 建议单独装并跳过依赖（避免拉 xformers）
+# （先：pip install vllm==0.8.5 --no-deps）
+# 也可留在这里，但不如单独装稳：
+# vllm==0.8.5
+
+# 关键：加上 sentencepiece 的 wheel 版本
+sentencepiece==0.2.0
+
+openai>=1.30.0
+pprintpp>=0.4.0
+
+安装顺序建议：
+# python -m pip install -U pip setuptools wheel
+# pip cache purge
+
+# # 先装 base
+# pip install -r requirements-cuda12.4.txt
+
+# # 再单独装 vLLM，跳过依赖（避免拉 xformers）
+# pip install vllm==0.8.5 --no-deps
+# pip install --only-binary=:all: "pyzmq>=25,<27"
+# pip install "sglang[all]>=0.5.3rc0"  

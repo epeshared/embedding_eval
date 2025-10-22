@@ -1,0 +1,4 @@
+ov_models/*
+datasets/*
+*nsys-rep
+*.log
