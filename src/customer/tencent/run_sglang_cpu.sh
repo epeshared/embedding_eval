@@ -31,11 +31,37 @@ set -euo pipefail
 #   --num_samples 512 --batch_size 64
 
 
+# python benchmark_clip_sglang_launcher.py \
+#   --workers 4 \
+#   --cores 16-19 \
+#   --script benchmark_clip_sglang.py \
+#   -- \
+#   --base_url=http://127.0.0.1:30000 \
+#   --model=openai/clip-vit-large-patch14-336 \
+#   --api=v1 \
+#   --mode=multimodal \
+#   --data_source=random \
+#   --image_transport=data-url \
+#   --num_samples=10000 \
+#   --batch_size=100
 
+# python benchmark_clip_sglang_launcher.py \
+#   --workers 2 \
+#   --cores 16-17 \
+#   --script benchmark_clip_sglang.py \
+#   -- \
+#   --base_url=http://127.0.0.1:30000 \
+#   --model=openai/clip-vit-base-patch32 \
+#   --api=v1 \
+#   --mode=multimodal \
+#   --data_source=random \
+#   --image_transport=data-url \
+#   --num_samples=10000 \
+#   --batch_size=100
 
 python benchmark_clip_sglang_launcher.py \
-  --workers 4 \
-  --cores 8-11 \
+  --workers 2 \
+  --cores 16-17 \
   --script benchmark_clip_sglang.py \
   -- \
   --base_url=http://127.0.0.1:30000 \
@@ -45,6 +71,5 @@ python benchmark_clip_sglang_launcher.py \
   --data_source=random \
   --image_transport=data-url \
   --num_samples=10000 \
-  --batch_size=100
-
-
+  --batch_size=100 \
+  --clip_variant large-336
