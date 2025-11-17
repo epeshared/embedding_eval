@@ -1,0 +1,11 @@
+torch>=2.1.0
+datasets>=2.18.0
+scikit-learn>=1.4.0
+transformers>=4.38.0      # 用 transformers 后端时
+intel-extension-for-pytorch>=2.1.100; platform_system=="Linux" and platform_machine=="x86_64"
+
+llama-cpp-python>=0.2.60  # 用 llama.cpp 后端时
+vllm>=0.6.5               # 用 vllm 本地 API 时（task='embed'）
+openai>=1.30.0            # 仅当使用 sglang_http（localhost）时
+pprintpp>=0.4.0
+# pip install "sglang[all]>=0.5.3rc0"
