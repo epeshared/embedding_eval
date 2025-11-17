@@ -34,8 +34,7 @@ DEFAULT_MODEL = "openai/clip-vit-base-patch32"
 def resolve_model_path(model_name: str) -> str:
     """把命令行传进来的名字映射到本地目录或HF名字。"""
     if model_name in MODEL_ALIASES:
-        return MODEL_ALIASES[m
-odel_name]
+        return MODEL_ALIASES[model_name]
     # 没在别名表里，就当它是个本地目录或HF名字
     return model_name
 
@@ -65,6 +64,7 @@ def prepare_huggingface_model(
     model_class = getattr(transformers, class_name)
 
     if device == "auto":
+        # 让 HF 自己决定把模型丢到 GPU 还是 CPU（device_map="auto"）
         model = model_class.from_pretrained(
             pretrained_model_name_or_path, device_map="auto", **model_params
         )
@@ -117,6 +117,7 @@ class BenchmarkImage:
         print("Init Finished! image_size=(", self.image_h, self.image_w, ")")
 
     def benchmark(self, inputs):
+        # 把 inputs 丢到模型所在的 device
         inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
         with torch.no_grad():
             outputs = self.model(**inputs)
@@ -168,7 +169,15 @@ async def benchmark_image_async(
         start = time.time()
         await asyncio.gather(*tasks)
         total = time.time() - start
-        print(f"total time: {total:.4f}s")
+
+        # ====== 这里加 TPS 计算 ======
+        total_images = parallelism * batch_size * num_iter
+        tps = total_images / total if total > 0 else 0.0
+
+        print(
+            f"total time: {total:.4f}s, "
+            f"total_images={total_images}, TPS={tps:.2f} images/s"
+        )
 
 
 def benchmark_image(
@@ -185,7 +194,16 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="CLIP model benchmark (random images)")
     parser.add_argument("--parallelism", type=int, default=1)
     parser.add_argument("--batch_size", type=int, default=100)
-    parser.add_argument("--num_iter", type=int, default=5)
+
+    # 两种用法：
+    # 1) 旧：直接给 num_iter
+    # 2) 新：给 total_images（总图片数，全局 = parallelism * batch_size * num_iter）
+    parser.add_argument("--num_iter", type=int, default=5,
+                        help="迭代次数（如果未提供 --total_images，则使用这个）")
+    parser.add_argument("--total_images", type=int, default=None,
+                        help="总图片数（global），如果提供则覆盖 num_iter，"
+                             "要求 total_images 能被 parallelism * batch_size 整除")
+
     parser.add_argument("--device", type=str, default="auto")
     parser.add_argument("--data_type", type=str, default="fp32")
     parser.add_argument(
@@ -200,10 +218,37 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
+    # ====== 这里根据 total_images / num_iter 计算真实 num_iter ======
+    if args.total_images is not None:
+        per_step = args.parallelism * args.batch_size
+        if per_step <= 0:
+            raise ValueError("parallelism * batch_size 必须 > 0")
+
+        if args.total_images % per_step != 0:
+            raise ValueError(
+                f"total_images={args.total_images} 不能被 "
+                f"parallelism * batch_size = {per_step} 整除，"
+                f"请调整 total_images 或 batch_size / parallelism。"
+            )
+
+        num_iter = args.total_images // per_step
+        print(
+            f"[INFO] 使用 total_images={args.total_images}, "
+            f"parallelism={args.parallelism}, batch_size={args.batch_size} "
+            f"得到 num_iter={num_iter}"
+        )
+    else:
+        num_iter = args.num_iter
+        print(
+            f"[INFO] 未提供 total_images，使用 num_iter={num_iter}，"
+            f"等效 total_images = parallelism * batch_size * num_iter = "
+            f"{args.parallelism * args.batch_size * num_iter}"
+        )
+
     benchmark_image(
         parallelism=args.parallelism,
         batch_size=args.batch_size,
-        num_iter=args.num_iter,
+        num_iter=num_iter,
         device=args.device,
         data_type=args.data_type,
         model_name=args.model,
