@@ -20,8 +20,8 @@ export DNNL_VERBOSE=0
 export IPEX_DISABLE_AUTOCAST=1   # 建议开启，规避 uint64 copy_kernel 坑
 
 # ===== 日志目录 =====
-mkdir -p "sglang_logs/sglang_cpu"
-export SGLANG_TORCH_PROFILER_DIR="$PWD/sglang_logs/sglang_cpu"
+# mkdir -p "sglang_logs/sglang_cpu"
+# export SGLANG_TORCH_PROFILER_DIR="$PWD/sglang_logs/sglang_cpu"
 
 # ===== WORK_HOME 更稳的写法 =====
 WORK_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")"/.. && pwd)"
@@ -46,38 +46,28 @@ export LD_PRELOAD="${PRELOAD_JOIN}${LD_PRELOAD:+:$LD_PRELOAD}"
 # ===== 线程/NUMA（按需调整）=====
 export MALLOC_ARENA_MAX=1
 
-# ===== Batch Size =====
-BATCH_SIZE=16
-echo "Batch size = $BATCH_SIZE"
+# ===== BATCH_SIZE 列表 =====
+# BATCH_LIST=(1 2 4 8 16 32 64 100 128)
+BATCH_LIST=(1)
 
-# ===== 绑核与启动 =====
-numactl -C 0-7 \
-python -m sglang.launch_server \
-  --model-path "$MODEL_DIR" \
-  --tokenizer-path "$MODEL_DIR" \
-  --trust-remote-code \
-  --disable-overlap-schedule \
-  --is-embedding \
-  --device cpu \
-  --host 0.0.0.0 --port 30000 \
-  --skip-server-warmup \
-  --tp 1 \
-  --enable-torch-compile \
-  --torch-compile-max-bs "$BATCH_SIZE" \
-  --attention-backend intel_amx \
-  --log-level error
+for BATCH_SIZE in "${BATCH_LIST[@]}"; do
+    echo "=============================="
+    echo "Running BATCH_SIZE=$BATCH_SIZE"
+    echo "=============================="
 
-# numactl -C 0-15 \
-# python -m sglang.launch_server \
-#   --model-path "$MODEL_DIR" \
-#   --tokenizer-path "$MODEL_DIR" \
-#   --trust-remote-code \
-#   --disable-overlap-schedule \
-#   --is-embedding \
-#   --device cuda \
-#   --host 0.0.0.0 --port 30000 \
-#   --skip-server-warmup \
-#   --tp 1 \
-#   --enable-torch-compile \
-#   --torch-compile-max-bs "$BATCH_SIZE" \
-#   --log-level error
+    numactl -C 0-7,256-263 \
+    python $WORK_HOME/main.py \
+      --backend sglang-offline \
+      --model "$MODEL_DIR" \
+      --device cpu \
+      --yahoo-jsonl $WORK_HOME/datasets/yahoo_answers_title_answer.jsonl \
+      --yahoo-mode q \
+      --yahoo-max 10000 \
+      --batch-size $BATCH_SIZE \
+      --dump-emb $WORK_HOME/runs/yahoo_q_bs${BATCH_SIZE}.pt \
+      --output-csv $WORK_HOME/runs/yahoo_eval_bs${BATCH_SIZE}.csv     
+
+done
+echo "All done."
+
+# python $WORK_HOME/src/backends/sglang_offline_backend.py --model-path "$MODEL_DIR" --device cpu

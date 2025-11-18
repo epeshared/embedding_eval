@@ -15,7 +15,7 @@ echo "Using model: $MODEL_PATH"
 
 # ===== BATCH_SIZE 列表 =====
 # BATCH_LIST=(1 2 4 8 16 32 64 100 128)
-BATCH_LIST=(200)
+BATCH_LIST=(100)
 
 for BATCH_SIZE in "${BATCH_LIST[@]}"; do
     echo "=============================="
@@ -23,7 +23,7 @@ for BATCH_SIZE in "${BATCH_LIST[@]}"; do
     echo "=============================="
 
     numactl -C 0-63 python $WORK_HOME/main.py \
-      --backend sglang \
+      --backend sglang-online  \
       --model "$MODEL_PATH" \
       --sgl-url http://127.0.0.1:30000 \
       --sgl-api v1 \

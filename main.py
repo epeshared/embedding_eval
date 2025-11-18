@@ -2,8 +2,11 @@
 # -*- coding: utf-8 -*-
 """
 Unified embedding evaluation entry.
-Backends: transformers, sglang, clip, vllm_openai (vLLM OpenAI-compatible), vllm (native LLM.embed), llamacpp(optional placeholder)
-Tasks: pairwise text classification (LCQMC/AFQMC/PAWS-X zh etc.), Food-101 zero-shot, unlabeled Yahoo JSONL encode, MTEB bridge.
+Backends: transformers, sglang-online (HTTP), sglang-offline (Engine),
+          clip, vllm_openai (vLLM OpenAI-compatible), vllm (native LLM.embed),
+          llamacpp(optional placeholder)
+Tasks: pairwise text classification (LCQMC/AFQMC/PAWS-X zh etc.),
+       Food-101 zero-shot, unlabeled Yahoo JSONL encode, MTEB bridge.
 This file tries to import helper modules from either `src.*` or local files for robustness.
 """
 
@@ -56,7 +59,7 @@ def _try_import():
         except Exception:
             mods['mteb'] = None
 
-    # sglang backend (optional)
+    # sglang backend (optional, online HTTP)
     try:
         from src.backends.sglang_backend import SGLangEncoder as _SGL
         mods['sgl_cls'] = _SGL
@@ -66,6 +69,17 @@ def _try_import():
             mods['sgl_cls'] = _SGL
         except Exception:
             mods['sgl_cls'] = None
+
+    # sglang OFFLINE backend (new)
+    try:
+        from src.backends.sglang_offline_backend import SGLangOfflineEncoder as _SGL_OFF
+        mods['sgl_offline_cls'] = _SGL_OFF
+    except Exception:
+        try:
+            from sglang_offline_backend import SGLangOfflineEncoder as _SGL_OFF
+            mods['sgl_offline_cls'] = _SGL_OFF
+        except Exception:
+            mods['sgl_offline_cls'] = None
 
     # vLLM OpenAI backend (optional)
     try:
@@ -91,107 +105,30 @@ def _try_import():
 
     return mods
 
+
 mods = _try_import()
 utils = mods['utils']
 evals = mods['evals']
 datasets_mod = mods['datasets']   # <- datasets 模块（包含 load_yahoo_answers_jsonl）
 mteb = mods['mteb']
-SGLangEncoder = mods['sgl_cls']
+SGLangEncoder = mods['sgl_cls']              # 在线 HTTP 版
+SGLangOfflineEncoder = mods['sgl_offline_cls']  # 离线 Engine 版
 VllmOpenAIEncoder = mods['vllm_oai_cls']
 VLLMEncoder = mods['vllm_cls']
 
-# ---- Minimal Transformers encoder (mean pooling) ----
-class HFEncoder:
-    def __init__(self, model: str, device: str = "cpu",
-                 use_ipex: bool = False, amp: str = "auto",
-                 trust_remote_code: bool = True, max_length: int = 512,
-                 offline: bool = False, hf_endpoint: str = ""):
-        from transformers import AutoModel, AutoTokenizer
-        if offline:
-            os.environ["TRANSFORMERS_OFFLINE"] = "1"
-        if hf_endpoint:
-            os.environ["HF_ENDPOINT"] = hf_endpoint
-            os.environ["HF_HUB_BASE_URL"] = hf_endpoint
-
-        self.tok = AutoTokenizer.from_pretrained(model, trust_remote_code=trust_remote_code)
-        self.model = AutoModel.from_pretrained(model, trust_remote_code=trust_remote_code)
-        self.device = device
-        self.model.to(device)
-        self.model.eval()
-        self.max_length = max_length
-        self.amp = amp.lower()
-        self.use_ipex = bool(use_ipex)
-
-        # optional IPEX
-        if self.use_ipex and device == "cpu":
-            try:
-                import intel_extension_for_pytorch as ipex  # noqa: F401
-                print("[Init] IPEX enabled")
-            except Exception as e:
-                print(f"[Warn] IPEX import failed: {e}")
-
-    @torch.inference_mode()
-    def encode(self, texts: List[str], batch_size: int = 128):
-        import torch
-        out = []
-        for i in range(0, len(texts), batch_size):
-            batch = texts[i:i+batch_size]
-            toks = self.tok(batch, padding=True, truncation=True, max_length=self.max_length, return_tensors="pt")
-            toks = {k: v.to(self.device) for k, v in toks.items()}
-            with torch.autocast(device_type=("cpu" if self.device=="cpu" else "cuda"),
-                                dtype=torch.bfloat16 if self.amp in ("bf16","auto") else torch.float16,
-                                enabled=(self.amp!="off")):
-                out_hidden = self.model(**toks).last_hidden_state  # [B, T, H]
-                attn = toks["attention_mask"].unsqueeze(-1).float()
-                summed = (out_hidden * attn).sum(dim=1)
-                denom = attn.sum(dim=1).clamp(min=1e-6)
-                emb = summed / denom                     # mean pooling
-                emb = torch.nn.functional.normalize(emb, p=2, dim=1)  # L2
-                out.append(emb.to("cpu"))
-        return torch.cat(out, dim=0)
-
-# ---- CLIP encoder (text/image) for Food-101 ----
-class CLIPEncoder:
-    def __init__(self, model: str, device: str="cpu", use_ipex: bool=False, amp: str="auto", trust_remote_code: bool=True):
-        from transformers import CLIPModel, CLIPProcessor
-        self.model = CLIPModel.from_pretrained(model, trust_remote_code=trust_remote_code).to(device)
-        self.processor = CLIPProcessor.from_pretrained(model, trust_remote_code=trust_remote_code)
-        self.device = device
-        self.amp = amp
-
-    @torch.inference_mode()
-    def encode_text(self, texts: List[str], batch_size: int=64):
-        import torch
-        outs = []
-        for i in range(0, len(texts), batch_size):
-            batch = texts[i:i+batch_size]
-            inputs = self.processor(text=batch, return_tensors="pt", padding=True, truncation=True).to(self.device)
-            with torch.autocast(device_type=("cpu" if self.device=="cpu" else "cuda"),
-                                dtype=torch.bfloat16, enabled=(self.amp!="off")):
-                embs = self.model.get_text_features(**inputs)
-                embs = torch.nn.functional.normalize(embs, p=2, dim=1)
-            outs.append(embs.to("cpu"))
-        return torch.cat(outs, dim=0)
-
-    @torch.inference_mode()
-    def encode_images(self, images, batch_size: int=32):
-        import torch
-        outs = []
-        for i in range(0, len(images), batch_size):
-            batch = images[i:i+batch_size]
-            inputs = self.processor(images=batch, return_tensors="pt").to(self.device)
-            with torch.autocast(device_type=("cpu" if self.device=="cpu" else "cuda"),
-                                dtype=torch.bfloat16, enabled=(self.amp!="off")):
-                embs = self.model.get_image_features(**inputs)
-                embs = torch.nn.functional.normalize(embs, p=2, dim=1)
-            outs.append(embs.to("cpu"))
-        return torch.cat(outs, dim=0)
 
 # ---------------- Yahoo (JSONL) via datasets.load_yahoo_answers_jsonl ----------------
 def parse_args():
-    p = argparse.ArgumentParser(description="Embedding evaluation launcher (transformers / SGLang / CLIP / vllm_openai(vLLM) / vllm(native))")
-    p.add_argument("--backend", type=str, default="transformers",
-                   choices=["transformers","sglang","clip","vllm_openai","vllm","llamacpp"])
+    p = argparse.ArgumentParser(
+        description="Embedding evaluation launcher "
+                    "(transformers / sglang-online / sglang-offline / CLIP / vllm_openai(vLLM) / vllm(native))"
+    )
+    p.add_argument(
+        "--backend", type=str, default="transformers",
+        choices=["transformers", "sglang-online", "sglang-offline",
+                 "clip", "vllm_openai", "vllm", "llamacpp"],
+        help="Backend type: transformers / sglang-online(HTTP) / sglang-offline(Engine) / clip / vllm_openai / vllm / llamacpp",
+    )
     p.add_argument("--model", type=str, default="BAAI/bge-large-zh-v1.5")
 
     # datasets / tasks
@@ -219,7 +156,7 @@ def parse_args():
     p.add_argument("--hf-endpoint", type=str, default="")
     p.add_argument("--trust-remote-code", type=str, default="True")
 
-    # SGLang
+    # SGLang server (online)
     p.add_argument("--sgl-url", type=str, default="http://127.0.0.1:30000")
     p.add_argument("--sgl-api", type=str, default="v1", choices=["v1","native","openai"])
     p.add_argument("--sgl-api-key", type=str, default="")
@@ -247,34 +184,38 @@ def parse_args():
 
     return p.parse_args()
 
+
 def to_bool(x: str) -> bool:
     return str(x).lower() in ("1","true","yes","on")
 
+
 def build_encoder(args):
     backend = args.backend
-    if backend == "transformers":
-        # optional AMX/CPU policy
-        try:
-            utils.apply_amx_policy(backend="transformers", device=args.device,
-                                   use_ipex=to_bool(args.use_ipex), amp=args.amp,
-                                   verbose=False)
-        except Exception as e:
-            print(f"[Warn] apply_amx_policy skipped: {e}")
 
-        return HFEncoder(model=args.model,
-                         device=args.device,
-                         use_ipex=to_bool(args.use_ipex),
-                         amp=args.amp,
-                         trust_remote_code=to_bool(args.trust_remote_code),
-                         max_length=args.max_length,
-                         offline=to_bool(args.offline),
-                         hf_endpoint=args.hf_endpoint)
-
-    elif backend == "sglang":
+    if backend == "sglang-online":
+        # 原 HTTP 版 sglang backend
         if SGLangEncoder is None:
-            raise RuntimeError("SGLangEncoder not available")
-        return SGLangEncoder(base_url=args.sgl_url, model=args.model,
-                             api=args.sgl_api, api_key=args.sgl_api_key)
+            raise RuntimeError("SGLangEncoder (online) not available")
+        return SGLangEncoder(base_url=args.sgl_url,
+                             model=args.model,
+                             api=args.sgl_api,
+                             api_key=args.sgl_api_key)
+
+    elif backend == "sglang-offline":
+        # 新增：本地 Engine 版 sglang backend
+        if SGLangOfflineEncoder is None:
+            raise RuntimeError("SGLangOfflineEncoder not available (sglang_offline_backend.py missing?)")
+        return SGLangOfflineEncoder(
+            model=args.model,
+            dtype="auto",
+            device=args.device,
+            tp_size=1,
+            dp_size=1,
+            is_embedding=True,
+            enable_torch_compile=True,
+            torch_compile_max_bs=args.batch_size,
+            attention_backend="intel_amx" if args.device == "cpu" else None,
+        )
 
     elif backend == "vllm_openai":
         if VllmOpenAIEncoder is None:
@@ -298,13 +239,9 @@ def build_encoder(args):
         if args.vllm_max_model_len and args.vllm_max_model_len > 0:
             kwargs["max_model_len"] = args.vllm_max_model_len
         return VLLMEncoder(**kwargs)
-
-    elif backend == "clip":
-        return CLIPEncoder(model=args.model, device=args.device,
-                           use_ipex=to_bool(args.use_ipex), amp=args.amp,
-                           trust_remote_code=to_bool(args.trust_remote_code))
     else:
         raise NotImplementedError(f"Backend '{backend}' is not implemented in this entry.")
+
 
 # ---------------- Unlabeled Yahoo pipeline (uses datasets.load_yahoo_answers_jsonl) ----------------
 def run_unlabeled_yahoo(args, encoder) -> None:
@@ -325,11 +262,11 @@ def run_unlabeled_yahoo(args, encoder) -> None:
     if not texts:
         print("[Yahoo] No texts loaded.")
         return
-    
-    #warm-up
-    print(f"[Yahoo] warm-up encoding {min(1000, len(texts))} samples ...")
-    warmup_len = min(1000, len(texts))
-    _ = encoder.encode(texts[:warmup_len], batch_size=args.batch_size)
+
+    # warm-up
+    print(f"[Yahoo] warm-up encoding {len(texts)} samples ...")
+    # warmup_len = len(texts)
+    _ = encoder.encode(texts, batch_size=args.batch_size)
 
     print(f"[Yahoo] total={len(texts)} mode={args.yahoo_mode}, batch_size={args.batch_size}")
     t0 = time.time()
@@ -366,9 +303,11 @@ def run_unlabeled_yahoo(args, encoder) -> None:
             new = not os.path.exists(args.output_csv)
             with open(args.output_csv, "a", newline="", encoding="utf-8") as f:
                 w = csv.DictWriter(f, fieldnames=list(row.keys()))
-                if new: w.writeheader()
+                if new:
+                    w.writeheader()
                 w.writerow(row)
         print(f"[Save] csv -> {args.output_csv}")
+
 
 def main():
     args = parse_args()
@@ -376,9 +315,9 @@ def main():
     # Build encoder
     encoder = build_encoder(args)
 
-    # SGLang server profiling (optional)
+    # SGLang server profiling (only for online HTTP backend)
     prof_started = False
-    if args.backend == "sglang" and args.profile:
+    if args.backend == "sglang-online" and args.profile:
         try:
             print("[Profile] start server profiler")
             encoder.start_profile(steps=args.profile_steps, out_dir=args.profile_output_dir)
@@ -440,7 +379,7 @@ def main():
             print(f"[MTEB] run failed: {e}")
 
     # stop profiling
-    if args.backend == "sglang" and args.profile and prof_started:
+    if args.backend == "sglang-online" and args.profile and prof_started:
         try:
             print("[Profile] stop server profiler")
             encoder.stop_profile()
@@ -448,6 +387,7 @@ def main():
             print(f"[Profile] stop failed: {e}")
 
     print("Done.")
+
 
 if __name__ == "__main__":
     main()
