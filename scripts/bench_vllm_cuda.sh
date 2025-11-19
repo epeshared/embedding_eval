@@ -15,7 +15,7 @@ torch.cuda.empty_cache()
 PY
 
 
-MODEL="Qwen/Qwen3-Embedding-4B"
+MODEL=""$WORK_HOME/models/Qwen/Qwen3-Embedding-4B""
 echo "Using model: $MODEL"
 
 # BATCH_LIST=(1 2 4 8 16 32 64 100 128)
@@ -29,7 +29,7 @@ for BATCH_SIZE in "${BATCH_LIST[@]}"; do
     # numactl -C 0-8 
     python $WORK_HOME/main.py \
       --backend vllm \
-      --model MODEL \
+      --model $MODEL \
       --vllm-dtype bfloat16 \
       --vllm-device cuda \
       --vllm-tp 1 \

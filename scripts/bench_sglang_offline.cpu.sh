@@ -59,7 +59,7 @@ for BATCH_SIZE in "${BATCH_LIST[@]}"; do
     python $WORK_HOME/main.py \
       --backend sglang-offline \
       --model "$MODEL_DIR" \
-      --device cuda \
+      --device cpu \
       --yahoo-jsonl $WORK_HOME/datasets/yahoo_answers_title_answer.jsonl \
       --yahoo-mode q \
       --yahoo-max 10000 \
