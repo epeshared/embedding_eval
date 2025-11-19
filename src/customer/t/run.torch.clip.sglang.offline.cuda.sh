@@ -9,11 +9,11 @@ export CUDA_VISIBLE_DEVICES=0
 TOTAL_IMAGES=20000
 PARALLELISM=2
 DATA_TYPE=fp16
-DEVICE=auto
+DEVICE=cuda
 MODEL="openai/clip-vit-base-patch32"
 
 # 要 sweep 的 batch size 列表（随便加）
-# BATCH_SIZE_LIST=(1 2 4 8 16 32 64 100 128)
+#BATCH_SIZE_LIST=(1 2 4 8 16 32 64 100 128)
 BATCH_SIZE_LIST=(1 100)
 
 echo "========== Batch Size Sweep =========="
@@ -36,7 +36,7 @@ for BATCH_SIZE in "${BATCH_SIZE_LIST[@]}"; do
     echo "Running batch_size = ${BATCH_SIZE}"
     echo "------------------------------------------------------------"
 
-    python bench_clip.py \
+    python bench_clip_sglang_offline.py \
       --data_type=${DATA_TYPE} \
       --parallelism=${PARALLELISM} \
       --batch_size=${BATCH_SIZE} \

@@ -48,7 +48,7 @@ export MALLOC_ARENA_MAX=1
 
 # ===== BATCH_SIZE 列表 =====
 # BATCH_LIST=(1 2 4 8 16 32 64 100 128)
-BATCH_LIST=(1)
+BATCH_LIST=(100)
 
 for BATCH_SIZE in "${BATCH_LIST[@]}"; do
     echo "=============================="
@@ -59,7 +59,7 @@ for BATCH_SIZE in "${BATCH_LIST[@]}"; do
     python $WORK_HOME/main.py \
       --backend sglang-offline \
       --model "$MODEL_DIR" \
-      --device cpu \
+      --device cuda \
       --yahoo-jsonl $WORK_HOME/datasets/yahoo_answers_title_answer.jsonl \
       --yahoo-mode q \
       --yahoo-max 10000 \
