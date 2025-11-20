@@ -209,7 +209,7 @@ def build_encoder(args):
             attn_backend = "intel_amx"
         elif args.device == "cuda":
             # 避开 flashinfer 的 bug，强制用 torch 实现
-            attn_backend = "torch"
+            attn_backend = None
         else:
             attn_backend = None
 
