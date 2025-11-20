@@ -196,15 +196,23 @@ def build_encoder(args):
         # 原 HTTP 版 sglang backend
         if SGLangEncoder is None:
             raise RuntimeError("SGLangEncoder (online) not available")
-        return SGLangEncoder(base_url=args.sgl_url,
-                             model=args.model,
-                             api=args.sgl_api,
-                             api_key=args.sgl_api_key)
-
+            return SGLangEncoder(base_url=args.sgl_url,
+                                model=args.model,
+                                api=args.sgl_api,
+                                api_key=args.sgl_api_key)
+        
     elif backend == "sglang-offline":
-        # 新增：本地 Engine 版 sglang backend
         if SGLangOfflineEncoder is None:
             raise RuntimeError("SGLangOfflineEncoder not available (sglang_offline_backend.py missing?)")
+
+        if args.device == "cpu":
+            attn_backend = "intel_amx"
+        elif args.device == "cuda":
+            # 避开 flashinfer 的 bug，强制用 torch 实现
+            attn_backend = "torch"
+        else:
+            attn_backend = None
+
         return SGLangOfflineEncoder(
             model=args.model,
             dtype="auto",
@@ -214,8 +222,9 @@ def build_encoder(args):
             is_embedding=True,
             enable_torch_compile=True,
             torch_compile_max_bs=args.batch_size,
-            attention_backend="intel_amx" if args.device == "cpu" else None,
+            attention_backend=attn_backend,
         )
+
 
     elif backend == "vllm_openai":
         if VllmOpenAIEncoder is None:
