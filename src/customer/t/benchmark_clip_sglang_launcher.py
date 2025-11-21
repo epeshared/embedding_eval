@@ -39,6 +39,26 @@ def parse_cores(s: str) -> List[int]:
             out.append(int(tok))
     return out
 
+def split_cores_for_workers(cores: List[int], num_workers: int) -> List[List[int]]:
+    """
+    将 cores 平均分配给 num_workers 个进程
+    返回: [[cores_for_worker_0], [cores_for_worker_1], ...]
+    
+    例如: cores=[40..79], workers=2 -> [[40..59], [60..79]]
+    """
+    total = len(cores)
+    cores_per_worker = total // num_workers
+    remainder = total % num_workers
+    
+    result = []
+    start = 0
+    for i in range(num_workers):
+        # 余数分配给前几个 worker
+        size = cores_per_worker + (1 if i < remainder else 0)
+        result.append(cores[start:start + size])
+        start += size
+    return result
+
 def set_common_thread_env(env: dict) -> None:
     # 避免每个子进程内部再使用多线程导致超额并行
     env.setdefault("OMP_NUM_THREADS", "1")
@@ -52,16 +72,17 @@ def set_common_thread_env(env: dict) -> None:
 def build_python_cmd(python_exe: str, script_path: str, passthrough_args: List[str]) -> List[str]:
     return [python_exe, script_path, *passthrough_args]
 
-def start_proc_taskset(core: int, cmd: List[str], env: dict, log_out, log_err):
-    # 用 taskset 绑定
-    full = ["taskset", "-c", str(core), *cmd]
+def start_proc_taskset(cores: List[int], cmd: List[str], env: dict, log_out, log_err):
+    # 用 taskset 绑定到多个核心
+    core_list = ",".join(map(str, cores))
+    full = ["taskset", "-c", core_list, *cmd]
     return subprocess.Popen(full, env=env, stdout=log_out, stderr=log_err, preexec_fn=os.setsid)
 
-def start_proc_affinity(core: int, cmd: List[str], env: dict, log_out, log_err):
-    # 用 sched_setaffinity 绑定
+def start_proc_affinity(cores: List[int], cmd: List[str], env: dict, log_out, log_err):
+    # 用 sched_setaffinity 绑定到多个核心
     def preexec():
         try:
-            os.sched_setaffinity(0, {core})
+            os.sched_setaffinity(0, set(cores))
         except AttributeError:
             # 某些系统/环境不支持，退回到不绑定（由调用方用 --use-taskset 解决）
             pass
@@ -92,8 +113,16 @@ def main():
         cores = parse_cores(args.cores)
     else:
         cores = list(range(args.workers))
+    
+    # 将核心分配给每个 worker
+    cores_per_worker = split_cores_for_workers(cores, args.workers)
+    
     if len(cores) < args.workers:
-        raise SystemExit(f"[Error] cores({len(cores)}) < workers({args.workers}). 请补足核心数或减少进程数。")
+        print(f"[Warning] total cores({len(cores)}) < workers({args.workers}). Workers will share cores.")
+    
+    print(f"[Launcher] Core allocation:")
+    for i, worker_cores in enumerate(cores_per_worker):
+        print(f"  worker-{i}: cores {worker_cores[0]}-{worker_cores[-1]} ({len(worker_cores)} cores)")
 
     # 路径与环境
     script_path = str(Path(args.script).resolve())
@@ -107,32 +136,34 @@ def main():
 
     if args.dry_run:
         for i in range(args.workers):
-            core = cores[i]
+            worker_cores = cores_per_worker[i]
+            core_str = ",".join(map(str, worker_cores))
             if args.use_taskset:
-                full = ["taskset", "-c", str(core), *cmd_base]
+                full = ["taskset", "-c", core_str, *cmd_base]
             else:
                 full = cmd_base
-            print(f"[dry-run] worker-{i} core={core} cmd: {shlex.join(full)}  env: OMP/MKL/OPENBLAS=1")
+            print(f"[dry-run] worker-{i} cores={core_str} cmd: {shlex.join(full)}  env: OMP/MKL/OPENBLAS=1")
         return
 
     procs = []
     log_files = []
-    print(f"[Launcher] starting {args.workers} workers; cores={cores}; logs={logs_dir}")
+    print(f"[Launcher] starting {args.workers} workers; total_cores={len(cores)}; logs={logs_dir}")
 
     try:
         for i in range(args.workers):
-            core = cores[i]
+            worker_cores = cores_per_worker[i]
             log_out = open(logs_dir / f"worker_{i}.out", "w", buffering=1)
             log_err = open(logs_dir / f"worker_{i}.err", "w", buffering=1)
             log_files.extend([log_out, log_err])
 
             if args.use_taskset:
-                p = start_proc_taskset(core, cmd_base, base_env, log_out, log_err)
+                p = start_proc_taskset(worker_cores, cmd_base, base_env, log_out, log_err)
             else:
-                p = start_proc_affinity(core, cmd_base, base_env, log_out, log_err)
+                p = start_proc_affinity(worker_cores, cmd_base, base_env, log_out, log_err)
 
-            procs.append((i, core, p))
-            print(f"[Launcher] worker-{i} PID={p.pid} pinned to core {core}; log={log_out.name}")
+            procs.append((i, worker_cores, p))
+            core_range = f"{worker_cores[0]}-{worker_cores[-1]}" if len(worker_cores) > 1 else str(worker_cores[0])
+            print(f"[Launcher] worker-{i} PID={p.pid} pinned to cores {core_range}; log={log_out.name}")
 
             if args.stagger_sec > 0 and i < args.workers - 1:
                 time.sleep(args.stagger_sec)
@@ -140,7 +171,7 @@ def main():
         # 等待子进程完成；同时处理 Ctrl-C
         def terminate_all(sig_name="SIGINT"):
             print(f"\n[Launcher] {sig_name} received. Terminating all workers...")
-            for i, core, p in procs:
+            for i, worker_cores, p in procs:
                 try:
                     os.killpg(os.getpgid(p.pid), signal.SIGTERM)
                 except Exception:
@@ -149,10 +180,11 @@ def main():
         try:
             exit_codes = {}
             while procs:
-                i, core, p = procs[0]
+                i, worker_cores, p = procs[0]
                 ret = p.wait()
                 exit_codes[i] = ret
-                print(f"[Launcher] worker-{i} (PID={p.pid}, core={core}) exited with code {ret}")
+                core_range = f"{worker_cores[0]}-{worker_cores[-1]}" if len(worker_cores) > 1 else str(worker_cores[0])
+                print(f"[Launcher] worker-{i} (PID={p.pid}, cores={core_range}) exited with code {ret}")
                 procs.pop(0)
             print("[Launcher] all workers finished.")
         except KeyboardInterrupt:
