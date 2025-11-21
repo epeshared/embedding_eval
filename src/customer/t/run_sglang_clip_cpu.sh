@@ -40,7 +40,8 @@ for BATCH_SIZE in "${BATCH_LIST[@]}"; do
       --image_transport=data-url \
       --num_samples=10000 \
       --batch_size=$BATCH_SIZE \
-      --clip_variant $clip_variant
+      --clip_variant $clip_variant \
+      --profile
 
 done
 echo "All done."
