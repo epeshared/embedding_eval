@@ -220,7 +220,7 @@ class SGLangEncoder:
     def __init__(self, base_url: str, model: str,
                  api: str = "v1", api_key: str = "", timeout: float = 120.0,
                  seed: int = 42, debug: bool = True,
-                 warmup: bool = False, warmup_iters: int = 8):
+                 warmup: bool = False, warmup_iters: int = 8, profile: bool = False):
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.api = api.lower()
@@ -236,6 +236,7 @@ class SGLangEncoder:
         self.warmup = bool(warmup)
         self.warmup_iters = int(max(0, warmup_iters))
         self._did_warmup = False
+        self.profile = profile
 
         print(f"[Init:sglang] url={self.base_url}, model='{self.model}', api='{self.api}', "
               f"seed={self.seed}, debug={self.debug}, warmup={self.warmup}x{self.warmup_iters}")
@@ -593,6 +594,8 @@ class SGLangEncoder:
 
         outs: List[torch.Tensor] = []
         total_elapsed = 0.0
+        sample_len = len(texts)
+        sample = (sample_len // batch_size // 2) * batch_size
 
         for batch_start in range(0, len(texts), batch_size):
             sub_t = texts[batch_start:batch_start + batch_size]
@@ -607,8 +610,28 @@ class SGLangEncoder:
             print_payload_safe(payload, "PAYLOAD /v1/embeddings (MULTIMODAL BATCH)", enable=self.debug)
 
             t0 = time.time()
+            if self.profile and batch_start == sample:
+                print("Starting profiler...")
+                try:
+                    resp_start = self.session.post(f"{self.base_url}/start_profile",
+                                                   json={"activities": ["CPU", "CUDA"], "record_shapes": True},
+                                                   timeout=10)
+                    if resp_start.status_code == 200:
+                        print("Profiler started")
+                except Exception as e:
+                    print(f"Failed to start profiler: {e}")
             resp = self.session.post(url, json=payload, headers=headers, timeout=self.timeout)
+            if self.profile and batch_start == sample:
+                print("Stopping profiler...")
+                try:
+                    resp_stop = self.session.post(f"{self.base_url}/stop_profile", timeout=10)
+                    if resp_stop.status_code == 200:
+                        print("Profiler stopped")
+                except Exception as e:
+                    print(f"Failed to stop profiler: {e}")
             total_elapsed += (time.time() - t0)
+            if batch_start == sample:
+                print("current batch uses ", time.time() - t0, " s")
             if resp.status_code != 200:
                 raise RuntimeError(f"/v1/embeddings multimodal {resp.status_code}: {resp.text[:1000]}")
 
@@ -711,6 +734,9 @@ def main():
     ap.add_argument("--warmup", action="store_true", help="run warmup calls before scoring")
     ap.add_argument("--warmup_iters", type=int, default=8, help="number of warmup calls")
 
+    # profile
+    ap.add_argument("--profile", action="store_true", help="run PyTorch Profile")
+
     args = ap.parse_args()
 
     np.random.seed(args.seed)
@@ -726,6 +752,7 @@ def main():
         debug=args.debug,
         warmup=args.warmup,
         warmup_iters=args.warmup_iters,
+        profile=args.profile,
     )
 
     if args.mode == "text":
