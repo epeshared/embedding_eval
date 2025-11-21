@@ -196,7 +196,8 @@ def build_encoder(args):
         # 原 HTTP 版 sglang backend
         if SGLangEncoder is None:
             raise RuntimeError("SGLangEncoder (online) not available")
-            return SGLangEncoder(base_url=args.sgl_url,
+        
+        return SGLangEncoder(base_url=args.sgl_url,
                                 model=args.model,
                                 api=args.sgl_api,
                                 api_key=args.sgl_api_key)
