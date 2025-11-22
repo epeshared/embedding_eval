@@ -367,7 +367,7 @@ def run_unlabeled_yahoo(args, encoder) -> None:
 
     # ------------ 非 sglang-offline 或 单线程：走简单路径 ------------
     if backend != "sglang-offline" or num_threads <= 1:
-        warmup_bs = min(num_samples, args.batch_size)
+        warmup_bs = num_samples
         print(f"[Yahoo] warm-up {warmup_bs} samples ...")
         try:
             _ = encoder.encode(texts[:warmup_bs], batch_size=args.batch_size)

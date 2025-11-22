@@ -15,7 +15,7 @@ echo "Using model: $MODEL_PATH"
 BATCH_LIST=(100)
 
 # ===== 每个 batch_size 启动多少个 main.py 进程 =====
-NUM_RUNS_PER_BS=2      # 这里改数字即可，例如 4 表示启动 4 个 main.py
+NUM_RUNS_PER_BS=4      # 这里改数字即可，例如 4 表示启动 4 个 main.py
 
 LOG_DIR="logs"
 mkdir -p "$LOG_DIR"
