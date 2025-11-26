@@ -49,15 +49,11 @@ class TransformersEncoder:
 
         self.cpu_amp_dtype: Optional[torch.dtype] = None
         self._ipex_enabled = False
-        if self.device.type == "cpu" and self.use_ipex:
-            try:
-                import intel_extension_for_pytorch as ipex  # noqa: F401
-                self.model = ipex.optimize(self.model, dtype=torch.bfloat16, inplace=True)
-                self.cpu_amp_dtype = torch.bfloat16
-                self._ipex_enabled = True
-                print("[Init:transformers] IPEX enabled (bf16).")
-            except Exception as e:
-                print(f"[Warn] IPEX import/optimize failed, fallback to plain PyTorch: {e}")
+        if self.amp == "bf16":
+            self.model.to(torch.bfloat16)
+        elif self.amp == "fp16":
+            self.model.to(torch.float16)
+
 
     @torch.inference_mode()
     def encode(self, texts: List[str], batch_size: int = 128) -> torch.Tensor:

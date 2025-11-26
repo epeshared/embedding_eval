@@ -175,12 +175,13 @@ def parse_args():
     p.add_argument("--dump-img-emb", type=str, default="")
     p.add_argument("--dump-txt-emb", type=str, default="")
 
-    # 并发控制（目前仅用于记录和日志，不再触发多进程）
+    # 并发控制（主要用于 Yahoo JSONL）
     p.add_argument(
         "--num-threads",
         type=int,
         default=1,
-        help="Reserved for future parallel encoding; currently only used for logging.",
+        help="Number of workers for Yahoo JSONL. "
+        "For sglang-offline, uses multi-process with one Engine per process.",
     )
 
     # device / perf
@@ -289,6 +290,54 @@ def build_encoder(args):
         raise NotImplementedError(f"Backend '{backend}' is not implemented in this entry.")
 
 
+# ---------------- sglang-offline worker (for multiprocessing) ----------------
+def _sglang_offline_worker(conn, chunk, args_dict):
+    """
+    子进程 worker：
+      1. 在子进程内初始化 SGLangOfflineEncoder（Engine）
+      2. 对 chunk 做 encode
+      3. 把结果以 numpy 数组发回主进程（避免 torch FD 共享导致 FileNotFoundError）
+    注意：这个函数必须在模块顶层定义，以便 spawn pickling。
+    """
+    try:
+        try:
+            from src.backends.sglang_offline_backend import (
+                SGLangOfflineEncoder as _WorkerEncoder,
+            )
+        except Exception:
+            from sglang_offline_backend import (
+                SGLangOfflineEncoder as _WorkerEncoder,
+            )
+
+        device = args_dict["device"]
+        if device == "cpu":
+            attn_backend = "intel_amx"
+        elif device == "cuda":
+            attn_backend = None
+        else:
+            attn_backend = None
+
+        encoder = _WorkerEncoder(
+            model=args_dict["model"],
+            dtype="auto",
+            device=device,
+            tp_size=1,
+            dp_size=1,
+            is_embedding=True,
+            enable_torch_compile=True,
+            torch_compile_max_bs=args_dict["batch_size"],
+            attention_backend=attn_backend,
+        )
+
+        embs = encoder.encode(chunk, batch_size=args_dict["batch_size"])
+        # 关键：发 numpy，避免 torch Tensor 的 FD 共享问题
+        conn.send(embs.cpu().numpy())
+    except Exception as e:
+        conn.send(e)
+    finally:
+        conn.close()
+
+
 # ---------------- Yahoo JSONL pipeline ----------------
 def run_unlabeled_yahoo(args, encoder) -> None:
     if not args.yahoo_jsonl:
@@ -316,17 +365,69 @@ def run_unlabeled_yahoo(args, encoder) -> None:
         f"batch_size={args.batch_size}, num_threads={num_threads}, backend={backend}"
     )
 
-    # ------------ 统一简单路径：所有 backend 都单进程，一个 encoder ------------
-    warmup_bs = num_samples
-    print(f"[Yahoo] warm-up {warmup_bs} samples ...")
-    try:
-        _ = encoder.encode(texts[:warmup_bs], batch_size=args.batch_size)
-    except Exception as e:
-        print(f"[Yahoo] warm-up failed: {e}")
+    # ------------ 非 sglang-offline 或 单线程：走简单路径 ------------
+    if backend != "sglang-offline" or num_threads <= 1:
+        warmup_bs = num_samples
+        print(f"[Yahoo] warm-up {warmup_bs} samples ...")
+        try:
+            _ = encoder.encode(texts[:warmup_bs], batch_size=args.batch_size)
+        except Exception as e:
+            print(f"[Yahoo] warm-up failed: {e}")
 
-    t0 = time.time()
-    embs = encoder.encode(texts, batch_size=args.batch_size)
-    t1 = time.time()
+        t0 = time.time()
+        embs = encoder.encode(texts, batch_size=args.batch_size)
+        t1 = time.time()
+    else:
+        # ------------ sglang-offline + 多进程：每个进程一个 Engine ------------
+        chunk_size = (num_samples + num_threads - 1) // num_threads
+        chunks: List[List[str]] = []
+        for i in range(num_threads):
+            start = i * chunk_size
+            end = min(num_samples, (i + 1) * chunk_size)
+            if start >= end:
+                break
+            chunks.append(texts[start:end])
+
+        print(
+            f"[Yahoo] [sglang-offline/mp] split into {len(chunks)} chunks, "
+            f"chunk_size≈{chunk_size}"
+        )
+
+        ctx = mp.get_context("spawn")
+        processes: List[mp.Process] = []
+        conns = []
+
+        args_dict = dict(
+            model=args.model,
+            device=args.device,
+            batch_size=args.batch_size,
+        )
+
+        t0 = time.time()
+        for chunk in chunks:
+            parent_conn, child_conn = ctx.Pipe()
+            p = ctx.Process(
+                target=_sglang_offline_worker,
+                args=(child_conn, chunk, args_dict),
+            )
+            p.start()
+            processes.append(p)
+            conns.append(parent_conn)
+
+        results_tensors: List[torch.Tensor] = []
+        for p, conn in zip(processes, conns):
+            res = conn.recv()
+            if isinstance(res, Exception):
+                # 子进程里抛的异常，直接在主进程里再抛
+                raise res
+            elif isinstance(res, np.ndarray):
+                results_tensors.append(torch.from_numpy(res))
+            else:
+                raise RuntimeError(f"Unexpected type from worker: {type(res)}")
+            p.join()
+
+        t1 = time.time()
+        embs = torch.cat(results_tensors, dim=0)
 
     # ------------ 统一统计 & 输出 ------------
     dt = t1 - t0
@@ -470,4 +571,9 @@ def main():
 
 
 if __name__ == "__main__":
+    # spawn 对 sglang 这类会自己起子进程的库更安全
+    try:
+        mp.set_start_method("spawn", force=False)
+    except RuntimeError:
+        pass
     main()

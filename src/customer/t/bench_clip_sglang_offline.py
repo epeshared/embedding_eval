@@ -108,25 +108,41 @@ class SGLangEmbeddingBench:
 
     def run_once(self, texts: List[str], images: Optional[List[np.ndarray]] = None):
         """用给定的 texts / images 跑一次 embedding。"""
+
         if self.embed_mode == "text":
             # 纯文本 embedding：忽略 images
+            print(f"[RUN_ONCE] texts = {texts}")
             outputs = self.engine.encode(prompt=texts)
+            print(f"[RUN_ONCE] outputs = {outputs}")
             _ = outputs
+
         elif self.embed_mode == "multimodal":
             assert images is not None, "multimodal 模式下必须提供 images"
+
             # 把 numpy 转成 PIL.Image，符合 image_data 的预期输入
             pil_images = [Image.fromarray(img) for img in images]
 
             # 每条样本 1 张图：list[list[Image]]
             image_data = [[im] for im in pil_images]
 
+            # ===== 打印输入 =====
+            print(f"[RUN_ONCE] texts = {texts}")
+            print(f"[RUN_ONCE] image_data (PIL) example = {image_data[0][0]}")  # 只打印第一张，避免刷屏
+
+            # ===== 运行 encode =====
             outputs = self.engine.encode(
                 prompt=texts,
                 image_data=image_data,
             )
+
+            # ===== 打印输出 =====
+            print(f"[RUN_ONCE] outputs = {outputs}")
+
             _ = outputs
+
         else:
             raise ValueError(f"Unsupported embed_mode: {self.embed_mode}")
+
 
 
 def run_benchmark_worker(
