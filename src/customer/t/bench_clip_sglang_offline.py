@@ -12,6 +12,7 @@ import dataclasses
 
 import sglang as sgl
 from sglang.srt.server_args import ServerArgs
+import torch
 
 # ====== 模型路径别名（按你的环境改） ======
 MODEL_ALIASES = {
@@ -179,6 +180,7 @@ def benchmark_embedding(
     data_type: str,
     model_name: str,
     embed_mode: str,
+    profile: bool = False,
 ):
     model_path = resolve_model_path(model_name)
     print(
@@ -212,6 +214,9 @@ def benchmark_embedding(
             return
         instances.append(inst)
 
+    if profile:
+        inst.engine.start_profile(record_shapes=True)
+
     start = time.time()
     with concurrent.futures.ThreadPoolExecutor(max_workers=parallelism) as executor:
         futures = [
@@ -221,6 +226,9 @@ def benchmark_embedding(
         for f in futures:
             f.result()
     total = time.time() - start
+
+    if profile:
+        inst.engine.stop_profile()
 
     total_images = parallelism * batch_size * num_iter
     tps = total_images / total if total > 0 else 0.0
@@ -280,6 +288,8 @@ if __name__ == "__main__":
         ),
     )
 
+    parser.add_argument("--profile", action="store_true", help="是否启用性能分析")
+
     args = parser.parse_args()
 
     # ====== 根据 total_images / num_iter 计算真实 num_iter ======
@@ -317,4 +327,5 @@ if __name__ == "__main__":
         data_type=args.data_type,
         model_name=args.model,
         embed_mode=args.embed_mode,
+        profile=args.profile,
     )
