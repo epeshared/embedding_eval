@@ -46,35 +46,7 @@ MODEL="openai/clip-vit-base-patch32"
 #BATCH_SIZE_LIST=(1 2 4 8 16 32 64 100 128)
 BATCH_SIZE_LIST=(1)
 
-echo "========== Batch Size Sweep =========="
-echo "TOTAL_IMAGES=${TOTAL_IMAGES}"
-echo "PARALLELISM=${PARALLELISM}"
-echo "DATA_TYPE=${DATA_TYPE}"
-echo "DEVICE=${DEVICE}"
-echo ""
-
-for BATCH_SIZE in "${BATCH_SIZE_LIST[@]}"; do
-    per_step=$((PARALLELISM * BATCH_SIZE))
-
-    # total_images 必须能整除 per_step
-    if (( TOTAL_IMAGES % per_step != 0 )); then
-        echo "error! batch_size=${BATCH_SIZE}, 因为 TOTAL_IMAGES % (parallelism*batch_size) != 0"
-        exit 1
-    fi
-
-    echo "------------------------------------------------------------"
-    echo "Running batch_size = ${BATCH_SIZE}"
-    echo "------------------------------------------------------------"
-
-    numactl -C 0-7 \
-    python bench_clip_sglang_offline.py \
-      --data_type=${DATA_TYPE} \
-      --parallelism=${PARALLELISM} \
-      --batch_size=${BATCH_SIZE} \
-      --total_images=${TOTAL_IMAGES} \
-      --device=${DEVICE} \
-      --embed_mode=multimodal \
-      --model=${MODEL}
-
-done
-echo "========== Sweep Finished =========="
+numactl -C 0-7 \
+python bench_clip_sglang_offline.py \
+      --validate
+exit 0
