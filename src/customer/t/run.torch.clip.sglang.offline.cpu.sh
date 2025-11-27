@@ -35,16 +35,21 @@ export LD_PRELOAD="${PRELOAD_JOIN}${LD_PRELOAD:+:$LD_PRELOAD}"
 export MALLOC_ARENA_MAX=1
 
 # ===== 可配置参数 =====
-TOTAL_IMAGES=20000
-PARALLELISM=2
+TOTAL_IMAGES=1
+PARALLELISM=1
 DATA_TYPE=fp16
 DEVICE=cpu
-#MODEL="openai/clip-vit-base-patch32"
-MODEL="openai/clip-vit-large-patch14-336"
+MODEL="openai/clip-vit-base-patch32"
+# MODEL="openai/clip-vit-large-patch14-336"
 
 # 要 sweep 的 batch size 列表（随便加）
 #BATCH_SIZE_LIST=(1 2 4 8 16 32 64 100 128)
-BATCH_SIZE_LIST=(100)
+BATCH_SIZE_LIST=(1)
+
+# numactl -C 0-7 \
+# python bench_clip_sglang_offline.py \
+#       --validate
+# exit 0
 
 echo "========== Batch Size Sweep =========="
 echo "TOTAL_IMAGES=${TOTAL_IMAGES}"
@@ -66,14 +71,15 @@ for BATCH_SIZE in "${BATCH_SIZE_LIST[@]}"; do
     echo "Running batch_size = ${BATCH_SIZE}"
     echo "------------------------------------------------------------"
 
+    numactl -C 0-7 \
     python bench_clip_sglang_offline.py \
       --data_type=${DATA_TYPE} \
       --parallelism=${PARALLELISM} \
       --batch_size=${BATCH_SIZE} \
       --total_images=${TOTAL_IMAGES} \
       --device=${DEVICE} \
+      --embed_mode=multimodal \
       --model=${MODEL}
 
 done
-
 echo "========== Sweep Finished =========="
