@@ -13,6 +13,7 @@ import dataclasses
 import sglang as sgl
 from sglang.srt.server_args import ServerArgs
 import torch
+import io
 
 # ====== 模型路径别名（按你的环境改） ======
 MODEL_ALIASES = {
@@ -80,6 +81,7 @@ class SGLangEmbeddingBench:
             attention_backend=attention_backend,
             torch_compile_max_bs=16,
             log_level="error",
+            # enable_trace="true",
         )
 
         engine_kwargs = dataclasses.asdict(server_args)
@@ -100,41 +102,51 @@ class SGLangEmbeddingBench:
             f"Init Finished! image_size=({self.image_h}, {self.image_w}), "
         )
 
-    def run_once(self,  embed_mode: str, texts: List[str], images: Optional[List[np.ndarray]] = None):
 
+    def run_once(
+        self,
+        embed_mode: str,
+        texts: List[str],
+        images: Optional[List] = None,
+    ):
         if embed_mode == "text":
-            # 纯文本 embedding：忽略 images
-            # print(f"[RUN_ONCE] texts = {texts}")
-            outputs = self.engine.encode(prompt=texts)
-            # print(f"[RUN_ONCE] outputs = {outputs}")
-            return outputs
+            return self.engine.encode(prompt=texts)
 
         elif embed_mode == "multimodal":
-            assert images is not None, "multimodal 模式下必须提供 images"
+            assert images is not None
+            # assert len(texts) == len(images)
 
-            # 把 numpy 转成 PIL.Image，符合 image_data 的预期输入
-            pil_images = [Image.fromarray(img) for img in images]
+            # image_data: List[List[MultimodalDataInputItem]]
+            image_data = []
 
-            # 每条样本 1 张图：list[list[Image]]
-            image_data = [[im] for im in pil_images]
+            for i, (text_i, img_i) in enumerate(zip(texts, images)):
+                # 统一成 PIL.Image 或 str
+                if isinstance(img_i, Image.Image):
+                    img_obj = img_i
+                elif isinstance(img_i, np.ndarray):
+                    img_obj = Image.fromarray(img_i)
+                elif isinstance(img_i, str):
+                    # 本地路径或 URL
+                    img_obj = img_i
+                else:
+                    raise TypeError(f"Unsupported image type at index {i}: {type(img_i)}")
 
-            # ===== 打印输入 =====
-            # print(f"[RUN_ONCE] texts = {texts}")
-            # print(f"[RUN_ONCE] image_data (PIL) example = {image_data[0][0]}")  # 只打印第一张，避免刷屏
+                # print("text:", text_i)
+                # print("img type:", type(img_obj))
 
-            # ===== 运行 encode =====
-            outputs = self.engine.encode(
+                image_data.append([img_obj])
+
+            out = self.engine.encode(
                 prompt=texts,
                 image_data=image_data,
             )
-
-            # ===== 打印输出 =====
-            # print(f"[RUN_ONCE] outputs = {outputs}")
-
-            return outputs
+            # print(out[0].keys())
+            # print("mm_items:", out[0].get("mm_items", None))
+            return out
 
         else:
             raise ValueError(f"Unsupported embed_mode: {embed_mode}")
+
 
 
 
@@ -268,16 +280,16 @@ def validate_image_effect(
             dtype=np.uint8,
         )
 
-    text = ["a beautiful landscape"]
+    text = [["a beautiful landscape"], ["a very beautiful landscape"], ["a happy landscape"]]
 
     # ---------- 对比 text-only vs multimodal ----------
-    out_text = inst.run_once(embed_mode="text", texts=text)
+    out_text = inst.run_once(embed_mode="text", texts=text[0])
     emb_text = torch.tensor(out_text[0]["embedding"])
     print("\n[SanityCheck] Text-only embedding first 8 dims:",
           emb_text[:8].tolist())
 
     fixed_img = rand_image()
-    out_mm = inst.run_once(embed_mode="multimodal", texts=text, images=[fixed_img])
+    out_mm = inst.run_once(embed_mode="multimodal", texts=text[0], images=[fixed_img])
     emb_mm = torch.tensor(out_mm[0]["embedding"])
     print("[SanityCheck] Text+Image embedding first 8 dims:",
           emb_mm[:8].tolist())
@@ -288,11 +300,12 @@ def validate_image_effect(
     print(f"[SanityCheck] cos(text_only, text+image) = {cos_text_vs_mm:.4f}")
 
     # ---------- Case 1: 固定 text + 每次随机 image ----------
-    print("\n[SanityCheck][Case 1] Same text, different random images:")
+    print("\n[SanityCheck][Case 1] 固定 text + 每次随机 image:")
     embs_case1 = []
     for i in range(3):
         img = rand_image()
-        out = inst.run_once(embed_mode="multimodal", texts=text, images=[img])
+        out = inst.run_once(embed_mode="multimodal", texts=text[0], images=[img])
+        # print(out)
         emb = torch.tensor(out[0]["embedding"])
         embs_case1.append(emb)
         print(f"Case 1 - iter {i}: first 8 dims = {emb[:8].tolist()}")
@@ -305,12 +318,12 @@ def validate_image_effect(
             ).item()
             print(f"Case 1 - cos(emb_{i}, emb_{j}) = {cos_ij:.4f}")
 
-    # ---------- Case 2: 固定 text + 固定 image ----------
-    print("\n[SanityCheck][Case 2] Same text, same fixed image:")
+    # ---------- Case 2: 随机 text + 固定 image ----------
+    print("\n[SanityCheck][Case 2] 随机 text + 固定 image:")
     fixed_img = rand_image()
     embs_case2 = []
     for i in range(3):
-        out = inst.run_once(embed_mode="multimodal", texts=text, images=[fixed_img])
+        out = inst.run_once(embed_mode="multimodal", texts=text[i], images=[fixed_img])
         emb = torch.tensor(out[0]["embedding"])
         embs_case2.append(emb)
         print(f"Case 2 - iter {i}: first 8 dims = {emb[:8].tolist()}")
