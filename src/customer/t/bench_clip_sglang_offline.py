@@ -54,17 +54,11 @@ class SGLangEmbeddingBench:
         device: str,
         data_type: str,
         model_path: str,
-        embed_mode: str = "multimodal",
         attention_backend: Optional[str] = None,
         enable_torch_compile: bool = False,
     ):
-        """
-        embed_mode: "text" 或 "multimodal"
-            - text:       只做文本 embedding
-            - multimodal: 文本 + 图片 一起喂到 encode
-        """
         self.text = "a beautiful landscape"
-        self.embed_mode = embed_mode
+        # self.embed_mode = embed_mode
 
         # ======== dtype / device 处理 ========
         dtype_str = map_data_type_to_dtype_str(data_type)
@@ -104,20 +98,18 @@ class SGLangEmbeddingBench:
 
         print(
             f"Init Finished! image_size=({self.image_h}, {self.image_w}), "
-            f"embed_mode={self.embed_mode}"
         )
 
-    def run_once(self, texts: List[str], images: Optional[List[np.ndarray]] = None):
-        """用给定的 texts / images 跑一次 embedding。"""
+    def run_once(self,  embed_mode: str, texts: List[str], images: Optional[List[np.ndarray]] = None):
 
-        if self.embed_mode == "text":
+        if embed_mode == "text":
             # 纯文本 embedding：忽略 images
-            print(f"[RUN_ONCE] texts = {texts}")
+            # print(f"[RUN_ONCE] texts = {texts}")
             outputs = self.engine.encode(prompt=texts)
-            print(f"[RUN_ONCE] outputs = {outputs}")
-            _ = outputs
+            # print(f"[RUN_ONCE] outputs = {outputs}")
+            return outputs
 
-        elif self.embed_mode == "multimodal":
+        elif embed_mode == "multimodal":
             assert images is not None, "multimodal 模式下必须提供 images"
 
             # 把 numpy 转成 PIL.Image，符合 image_data 的预期输入
@@ -127,8 +119,8 @@ class SGLangEmbeddingBench:
             image_data = [[im] for im in pil_images]
 
             # ===== 打印输入 =====
-            print(f"[RUN_ONCE] texts = {texts}")
-            print(f"[RUN_ONCE] image_data (PIL) example = {image_data[0][0]}")  # 只打印第一张，避免刷屏
+            # print(f"[RUN_ONCE] texts = {texts}")
+            # print(f"[RUN_ONCE] image_data (PIL) example = {image_data[0][0]}")  # 只打印第一张，避免刷屏
 
             # ===== 运行 encode =====
             outputs = self.engine.encode(
@@ -137,12 +129,12 @@ class SGLangEmbeddingBench:
             )
 
             # ===== 打印输出 =====
-            print(f"[RUN_ONCE] outputs = {outputs}")
+            # print(f"[RUN_ONCE] outputs = {outputs}")
 
-            _ = outputs
+            return outputs
 
         else:
-            raise ValueError(f"Unsupported embed_mode: {self.embed_mode}")
+            raise ValueError(f"Unsupported embed_mode: {embed_mode}")
 
 
 
@@ -150,10 +142,11 @@ def run_benchmark_worker(
     instance: SGLangEmbeddingBench,
     batch_size: int,
     num_iter: int,
+    embed_mode: str
 ):
     """单个 worker 线程：循环 num_iter 次调用 run_once。"""
     for _ in range(num_iter):
-        if instance.embed_mode == "text":
+        if embed_mode == "text":
             texts = [instance.text] * batch_size
             images = None
         else:
@@ -169,7 +162,7 @@ def run_benchmark_worker(
             ]
             texts = [instance.text] * batch_size
 
-        instance.run_once(texts, images)
+        instance.run_once(embed_mode, texts, images)
 
 
 def benchmark_embedding(
@@ -196,7 +189,6 @@ def benchmark_embedding(
                 device=device,
                 data_type=data_type,
                 model_path=model_path,
-                embed_mode=embed_mode,
                 attention_backend=None,      # 比如 "flashinfer"，按需再开
                 enable_torch_compile=False,  # GPU 可以考虑 True，这里先关
             )
@@ -205,7 +197,6 @@ def benchmark_embedding(
                 device=device,
                 data_type=data_type,
                 model_path=model_path,
-                embed_mode=embed_mode,
                 attention_backend="intel_amx",
                 enable_torch_compile=True,
             )
@@ -220,7 +211,7 @@ def benchmark_embedding(
     start = time.time()
     with concurrent.futures.ThreadPoolExecutor(max_workers=parallelism) as executor:
         futures = [
-            executor.submit(run_benchmark_worker, inst, batch_size, num_iter)
+            executor.submit(run_benchmark_worker, inst, batch_size, num_iter, embed_mode)
             for inst in instances
         ]
         for f in futures:
@@ -238,11 +229,111 @@ def benchmark_embedding(
         f"total_images={total_images}, TPS={tps:.2f} samples/s"
     )
 
+def validate_image_effect(
+    device: str,
+    data_type: str,
+    model_name: str,
+):
+    """验证：同 text + 不同 image / 同 text + 同一张 image 对 embedding 的影响。"""
+    print("\n[SanityCheck] Start image effect validation...")
+
+    model_path = resolve_model_path(model_name)
+
+    # 按 device 设置 backend / compile
+    if device == "cpu":
+        attention_backend = "intel_amx"
+        enable_torch_compile = True
+    elif device == "cuda":
+        attention_backend = None
+        enable_torch_compile = False
+    else:
+        print(f"[SanityCheck] Unsupported device={device}, skip sanity check.")
+        return
+
+    # 建一个单独的实例（主线程用，不走多线程）
+    inst = SGLangEmbeddingBench(
+        device=device,
+        data_type=data_type,
+        model_path=model_path,
+        attention_backend=attention_backend,
+        enable_torch_compile=enable_torch_compile,
+    )
+
+    def rand_image():
+        """生成一张随机图片，大小由模型 image_size 决定。"""
+        return np.random.randint(
+            0,
+            255,
+            (inst.image_h, inst.image_w, 3),
+            dtype=np.uint8,
+        )
+
+    text = ["a beautiful landscape"]
+
+    # ---------- 对比 text-only vs multimodal ----------
+    out_text = inst.run_once(embed_mode="text", texts=text)
+    emb_text = torch.tensor(out_text[0]["embedding"])
+    print("\n[SanityCheck] Text-only embedding first 8 dims:",
+          emb_text[:8].tolist())
+
+    fixed_img = rand_image()
+    out_mm = inst.run_once(embed_mode="multimodal", texts=text, images=[fixed_img])
+    emb_mm = torch.tensor(out_mm[0]["embedding"])
+    print("[SanityCheck] Text+Image embedding first 8 dims:",
+          emb_mm[:8].tolist())
+
+    cos_text_vs_mm = torch.nn.functional.cosine_similarity(
+        emb_text.unsqueeze(0), emb_mm.unsqueeze(0)
+    ).item()
+    print(f"[SanityCheck] cos(text_only, text+image) = {cos_text_vs_mm:.4f}")
+
+    # ---------- Case 1: 固定 text + 每次随机 image ----------
+    print("\n[SanityCheck][Case 1] Same text, different random images:")
+    embs_case1 = []
+    for i in range(3):
+        img = rand_image()
+        out = inst.run_once(embed_mode="multimodal", texts=text, images=[img])
+        emb = torch.tensor(out[0]["embedding"])
+        embs_case1.append(emb)
+        print(f"Case 1 - iter {i}: first 8 dims = {emb[:8].tolist()}")
+
+    # 两两算一下 cosine，相似度如果差异比较大，说明图像真的在影响结果
+    for i in range(3):
+        for j in range(i + 1, 3):
+            cos_ij = torch.nn.functional.cosine_similarity(
+                embs_case1[i].unsqueeze(0), embs_case1[j].unsqueeze(0)
+            ).item()
+            print(f"Case 1 - cos(emb_{i}, emb_{j}) = {cos_ij:.4f}")
+
+    # ---------- Case 2: 固定 text + 固定 image ----------
+    print("\n[SanityCheck][Case 2] Same text, same fixed image:")
+    fixed_img = rand_image()
+    embs_case2 = []
+    for i in range(3):
+        out = inst.run_once(embed_mode="multimodal", texts=text, images=[fixed_img])
+        emb = torch.tensor(out[0]["embedding"])
+        embs_case2.append(emb)
+        print(f"Case 2 - iter {i}: first 8 dims = {emb[:8].tolist()}")
+
+    for i in range(3):
+        for j in range(i + 1, 3):
+            cos_ij = torch.nn.functional.cosine_similarity(
+                embs_case2[i].unsqueeze(0), embs_case2[j].unsqueeze(0)
+            ).item()
+            print(f"Case 2 - cos(emb_{i}, emb_{j}) = {cos_ij:.4f}")
+
+    print("\n[SanityCheck] Image effect validation done.\n")
+
+
 
 if __name__ == "__main__":
+
     parser = argparse.ArgumentParser(
         description="SGLang offline embedding benchmark (text / text+image, random inputs)"
     )
+
+    parser.add_argument("--validate", action="store_true", help="是否启用验证逻辑")
+
     parser.add_argument("--parallelism", type=int, default=1)
     parser.add_argument("--batch_size", type=int, default=100)
 
@@ -292,6 +383,14 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
+    if args.validate:            
+        validate_image_effect(
+            device="cpu",
+            data_type="fp16",  # 或 "fp32" 看你现在实际用的
+            model_name="openai/clip-vit-base-patch32",
+        )
+        exit(0)
+    
     # ====== 根据 total_images / num_iter 计算真实 num_iter ======
     if args.total_images is not None:
         per_step = args.parallelism * args.batch_size
