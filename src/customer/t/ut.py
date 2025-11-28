@@ -18,15 +18,11 @@ import io
 # ====== 模型路径别名（按你的环境改） ======
 MODEL_ALIASES = {
     # 小模型
-    "clip-base": "/home/xtang/models/openai/clip-vit-base-patch32",
+    "clip-base": "openai/clip-vit-base-patch32",
     "openai/clip-vit-base-patch32": "openai/clip-vit-base-patch32",
-
-    # 大模型（336）
-    "clip-large-336": "/home/xtang/models/openai/clip-vit-large-patch14-336",
-    "openai/clip-vit-large-patch14-336": "openai/clip-vit-large-patch14-336",
 }
 
-DEFAULT_MODEL = "openai/clip-vit-large-patch14-336"
+DEFAULT_MODEL = "openai/clip-vit-base-patch32"
 
 
 def resolve_model_path(model_name: str) -> str:
@@ -114,9 +110,7 @@ class SGLangEmbeddingBench:
 
         elif embed_mode == "multimodal":
             assert images is not None
-            # assert len(texts) == len(images)
 
-            # image_data: List[List[MultimodalDataInputItem]]
             image_data = []
 
             for i, (text_i, img_i) in enumerate(zip(texts, images)):
@@ -131,9 +125,6 @@ class SGLangEmbeddingBench:
                 else:
                     raise TypeError(f"Unsupported image type at index {i}: {type(img_i)}")
 
-                # print("text:", text_i)
-                # print("img type:", type(img_obj))
-
                 image_data.append([img_obj])
 
             texts_with_token = ["<image> " + t for t in texts]
@@ -142,8 +133,6 @@ class SGLangEmbeddingBench:
                 prompt=texts_with_token,
                 image_data=image_data,
             )
-            # print(out[0].keys())
-            # print("mm_items:", out[0].get("mm_items", None))
             return out
 
         else:
@@ -245,103 +234,6 @@ def benchmark_embedding(
         f"total_images={total_images}, TPS={tps:.2f} samples/s"
     )
 
-def validate_image_effect(
-    device: str,
-    data_type: str,
-    model_name: str,
-):
-    """验证：同 text + 不同 image / 同 text + 同一张 image 对 embedding 的影响。"""
-    print("\n[SanityCheck] Start image effect validation...")
-
-    model_path = resolve_model_path(model_name)
-
-    # 按 device 设置 backend / compile
-    if device == "cpu":
-        attention_backend = "intel_amx"
-        enable_torch_compile = True
-    elif device == "cuda":
-        attention_backend = None
-        enable_torch_compile = False
-    else:
-        print(f"[SanityCheck] Unsupported device={device}, skip sanity check.")
-        return
-
-    # 建一个单独的实例（主线程用，不走多线程）
-    inst = SGLangEmbeddingBench(
-        device=device,
-        data_type=data_type,
-        model_path=model_path,
-        attention_backend=attention_backend,
-        enable_torch_compile=enable_torch_compile,
-    )
-
-    def rand_image():
-        """生成一张随机图片，大小由模型 image_size 决定。"""
-        return np.random.randint(
-            0,
-            255,
-            (inst.image_h, inst.image_w, 3),
-            dtype=np.uint8,
-        )
-
-    text = [["a beautiful landscape"], ["a very beautiful landscape"], ["a happy landscape"]]
-
-    # ---------- 对比 text-only vs multimodal ----------
-    out_text = inst.run_once(embed_mode="text", texts=text[0])
-    emb_text = torch.tensor(out_text[0]["embedding"])
-    print("\n[SanityCheck] Text-only embedding first 8 dims:",
-          emb_text[:8].tolist())
-
-    fixed_img = rand_image()
-    out_mm = inst.run_once(embed_mode="multimodal", texts=text[0], images=[fixed_img])
-    emb_mm = torch.tensor(out_mm[0]["embedding"])
-    print("[SanityCheck] Text+Image embedding first 8 dims:",
-          emb_mm[:8].tolist())
-
-    cos_text_vs_mm = torch.nn.functional.cosine_similarity(
-        emb_text.unsqueeze(0), emb_mm.unsqueeze(0)
-    ).item()
-    print(f"[SanityCheck] cos(text_only, text+image) = {cos_text_vs_mm:.4f}")
-
-    # ---------- Case 1: 固定 text + 每次随机 image ----------
-    print("\n[SanityCheck][Case 1] 固定 text + 每次随机 image:")
-    embs_case1 = []
-    for i in range(3):
-        img = rand_image()
-        out = inst.run_once(embed_mode="multimodal", texts=text[0], images=[img])
-        # print(out)
-        emb = torch.tensor(out[0]["embedding"])
-        embs_case1.append(emb)
-        print(f"Case 1 - iter {i}: first 8 dims = {emb[:8].tolist()}")
-
-    # 两两算一下 cosine，相似度如果差异比较大，说明图像真的在影响结果
-    for i in range(3):
-        for j in range(i + 1, 3):
-            cos_ij = torch.nn.functional.cosine_similarity(
-                embs_case1[i].unsqueeze(0), embs_case1[j].unsqueeze(0)
-            ).item()
-            print(f"Case 1 - cos(emb_{i}, emb_{j}) = {cos_ij:.4f}")
-
-    # ---------- Case 2: 随机 text + 固定 image ----------
-    print("\n[SanityCheck][Case 2] 随机 text + 固定 image:")
-    fixed_img = rand_image()
-    embs_case2 = []
-    for i in range(3):
-        out = inst.run_once(embed_mode="multimodal", texts=text[i], images=[fixed_img])
-        emb = torch.tensor(out[0]["embedding"])
-        embs_case2.append(emb)
-        print(f"Case 2 - iter {i}: first 8 dims = {emb[:8].tolist()}")
-
-    for i in range(3):
-        for j in range(i + 1, 3):
-            cos_ij = torch.nn.functional.cosine_similarity(
-                embs_case2[i].unsqueeze(0), embs_case2[j].unsqueeze(0)
-            ).item()
-            print(f"Case 2 - cos(emb_{i}, emb_{j}) = {cos_ij:.4f}")
-
-    print("\n[SanityCheck] Image effect validation done.\n")
-
-
 
 if __name__ == "__main__":
 
@@ -399,14 +291,6 @@ if __name__ == "__main__":
     parser.add_argument("--profile", action="store_true", help="是否启用性能分析")
 
     args = parser.parse_args()
-
-    if args.validate:            
-        validate_image_effect(
-            device="cpu",
-            data_type="fp16",  # 或 "fp32" 看你现在实际用的
-            model_name="openai/clip-vit-base-patch32",
-        )
-        exit(0)
     
     # ====== 根据 total_images / num_iter 计算真实 num_iter ======
     if args.total_images is not None:

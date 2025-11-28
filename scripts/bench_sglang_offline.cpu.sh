@@ -9,8 +9,8 @@ echo "WORK_HOME=$WORK_HOME"
 ###############################################
 # MODEL_DIR="$WORK_HOME/models/openai/clip-vit-base-patch32"
 # MODEL_DIR="$WORK_HOME/models/openai/clip-vit-large-patch14-336"
-MODEL_DIR="$WORK_HOME/models/Qwen/Qwen3-Embedding-4B"
-# MODEL_DIR="$WORK_HOME/models/Qwen/Qwen3-Embedding-0.6B"
+# MODEL_DIR="Qwen/Qwen3-Embedding-4B"
+MODEL_DIR="Qwen/Qwen3-Embedding-0.6B"
 ###############################################
 echo "Using model: $MODEL_DIR"
 
@@ -20,15 +20,15 @@ export DNNL_VERBOSE=0
 export IPEX_DISABLE_AUTOCAST=1   # 建议开启，规避 uint64 copy_kernel 坑
 
 # ===== 日志目录 =====
-# mkdir -p "sglang_logs/sglang_cpu"
-# export SGLANG_TORCH_PROFILER_DIR="$PWD/sglang_logs/sglang_cpu"
+mkdir -p "sglang_logs/sglang_cpu"
+export SGLANG_TORCH_PROFILER_DIR="$PWD/sglang_logs/sglang_cpu"
 
 # ===== WORK_HOME 更稳的写法 =====
 WORK_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")"/.. && pwd)"
 echo "WORK_HOME=$WORK_HOME"
 
 # ===== 环境路径 =====
-export CONDA_PREFIX="/root/miniforge3/envs/xtang-embedding-cpu"
+export CONDA_PREFIX="/home/yanbingj/miniforge3/envs/embed_eval"
 export SGLANG_USE_CPU_ENGINE=1
 
 # ===== 预装库（安全拼接 LD_PRELOAD）=====
@@ -55,17 +55,18 @@ for BATCH_SIZE in "${BATCH_LIST[@]}"; do
     echo "Running BATCH_SIZE=$BATCH_SIZE"
     echo "=============================="
 
-    numactl -C 0-7,256-263 \
+    # numactl -C 0-7,256-263 \
     python $WORK_HOME/main.py \
       --backend sglang-offline \
       --model "$MODEL_DIR" \
       --device cpu \
       --yahoo-jsonl $WORK_HOME/datasets/yahoo_answers_title_answer.jsonl \
       --yahoo-mode q \
-      --yahoo-max 10000 \
+      --yahoo-max 1000 \
       --batch-size $BATCH_SIZE \
       --dump-emb $WORK_HOME/runs/yahoo_q_bs${BATCH_SIZE}.pt \
-      --output-csv $WORK_HOME/runs/yahoo_eval_bs${BATCH_SIZE}.csv     
+      --output-csv $WORK_HOME/runs/yahoo_eval_bs${BATCH_SIZE}.csv \
+      --profile  
 
 done
 echo "All done."

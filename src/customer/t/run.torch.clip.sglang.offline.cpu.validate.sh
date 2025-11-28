@@ -16,7 +16,7 @@ WORK_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")"/.. && pwd)"
 echo "WORK_HOME=$WORK_HOME"
 
 # ===== 环境路径 =====
-export CONDA_PREFIX="/root/miniforge3/envs/xtang-embedding-cpu"
+export CONDA_PREFIX="/home/yanbingj/miniforge3/envs/embed_eval"
 export SGLANG_USE_CPU_ENGINE=1
 
 # ===== 预装库（安全拼接 LD_PRELOAD）=====
@@ -39,14 +39,14 @@ TOTAL_IMAGES=1
 PARALLELISM=1
 DATA_TYPE=fp16
 DEVICE=cpu
-MODEL="openai/clip-vit-base-patch32"
-# MODEL="openai/clip-vit-large-patch14-336"
+# MODEL="openai/clip-vit-base-patch32"
+MODEL="openai/clip-vit-large-patch14-336"
 
 # 要 sweep 的 batch size 列表（随便加）
 #BATCH_SIZE_LIST=(1 2 4 8 16 32 64 100 128)
-BATCH_SIZE_LIST=(1)
+BATCH_SIZE_LIST=(100)
 
-numactl -C 0-7 \
+# numactl -C 0-7 \
 python bench_clip_sglang_offline.py \
       --validate
 exit 0

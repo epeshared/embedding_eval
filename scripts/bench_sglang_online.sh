@@ -15,7 +15,7 @@ echo "Using model: $MODEL_PATH"
 BATCH_LIST=(100)
 
 # ===== 每个 batch_size 启动多少个 main.py 进程 =====
-NUM_RUNS_PER_BS=4      # 这里改数字即可，例如 4 表示启动 4 个 main.py
+NUM_RUNS_PER_BS=1      # 这里改数字即可，例如 4 表示启动 4 个 main.py
 
 LOG_DIR="logs"
 mkdir -p "$LOG_DIR"
@@ -37,12 +37,13 @@ for BATCH_SIZE in "${BATCH_LIST[@]}"; do
           --model "$MODEL_PATH" \
           --sgl-url http://127.0.0.1:30000 \
           --sgl-api v1 \
-          --yahoo-jsonl /home/xtang/datasets/yahoo_answers_title_answer.jsonl \
+          --yahoo-jsonl $WORK_HOME/datasets/yahoo_answers_title_answer.jsonl\
           --yahoo-mode q \
-          --yahoo-max 10000 \
+          --yahoo-max 1000 \
           --batch-size "$BATCH_SIZE" \
           --dump-emb "$DUMP_EMB" \
           --output-csv "$OUT_CSV" \
+          --profile \
           >"$LOG_FILE" 2>&1 &
 
         echo "Started PID $! for BATCH_SIZE=$BATCH_SIZE / RUN_ID=$RUN_ID"

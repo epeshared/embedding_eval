@@ -7,9 +7,10 @@ echo "WORK_HOME=$WORK_HOME"
 ###############################################
 #        ✅ 仅需在这里配置模型路径即可
 ###############################################
+# MODEL_DIR="openai/clip-vit-large-patch14-336"
 # MODEL_DIR="$WORK_HOME/models/openai/clip-vit-base-patch32"
 # MODEL_DIR="$WORK_HOME/models/openai/clip-vit-large-patch14-336"
-MODEL_DIR="$WORK_HOME/models/Qwen/Qwen3-Embedding-4B"
+MODEL_DIR="Qwen/Qwen3-Embedding-4B"
 # MODEL_DIR="$WORK_HOME/models/Qwen/Qwen3-Embedding-0.6B"
 ###############################################
 echo "Using model: $MODEL_DIR"
@@ -26,9 +27,10 @@ export SGLANG_TORCH_PROFILER_DIR="$PWD/sglang_logs/sglang_cpu"
 # ===== WORK_HOME 更稳的写法 =====
 WORK_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")"/.. && pwd)"
 echo "WORK_HOME=$WORK_HOME"
-
+set -x
 # ===== 环境路径 =====
-export CONDA_PREFIX="/root/miniforge3/envs/xtang-embedding-cpu"
+export CONDA_PREFIX="/home/yanbingj/miniforge3/envs/embed_eval"
+# export CONDA_PREFIX="$(dirname $(which conda))/../"
 export SGLANG_USE_CPU_ENGINE=1
 
 # ===== 预装库（安全拼接 LD_PRELOAD）=====
@@ -51,7 +53,7 @@ BATCH_SIZE=16
 echo "Batch size = $BATCH_SIZE"
 
 # ===== 绑核与启动 =====
-numactl -C 0-7 \
+# numactl -C 0-7 \
 python -m sglang.launch_server \
   --model-path "$MODEL_DIR" \
   --tokenizer-path "$MODEL_DIR" \
@@ -65,7 +67,9 @@ python -m sglang.launch_server \
   --enable-torch-compile \
   --torch-compile-max-bs "$BATCH_SIZE" \
   --attention-backend intel_amx \
-  --log-level error
+  --log-level info \
+  --mem-fraction-static 0.2 \
+  --enable-multimodal \
 
 # numactl -C 0-15 \
 # python -m sglang.launch_server \
