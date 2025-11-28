@@ -19,14 +19,14 @@ import io
 MODEL_ALIASES = {
     # 小模型
     "clip-base": "/home/xtang/models/openai/clip-vit-base-patch32",
-    "openai/clip-vit-base-patch32": "/home/xtang/models/openai/clip-vit-base-patch32",
+    "openai/clip-vit-base-patch32": "openai/clip-vit-base-patch32",
 
     # 大模型（336）
     "clip-large-336": "/home/xtang/models/openai/clip-vit-large-patch14-336",
-    "openai/clip-vit-large-patch14-336": "/home/xtang/models/openai/clip-vit-large-patch14-336",
+    "openai/clip-vit-large-patch14-336": "openai/clip-vit-large-patch14-336",
 }
 
-DEFAULT_MODEL = "openai/clip-vit-base-patch32"
+DEFAULT_MODEL = "openai/clip-vit-large-patch14-336"
 
 
 def resolve_model_path(model_name: str) -> str:
@@ -174,7 +174,9 @@ def run_benchmark_worker(
             ]
             texts = [instance.text] * batch_size
 
+        t0 = time.time()
         instance.run_once(embed_mode, texts, images)
+        print("current iter uses ", time.time() - t0, " s")
 
 
 def benchmark_embedding(
