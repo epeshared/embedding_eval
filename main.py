@@ -324,9 +324,19 @@ def run_unlabeled_yahoo(args, encoder) -> None:
     except Exception as e:
         print(f"[Yahoo] warm-up failed: {e}")
 
+    if args.profile:
+        if args.backend == "sglang-offline":
+            encoder.engine.start_profile(record_shapes=True)
+        if args.backend == "sglang-online":
+            encoder.start_profile(record_shapes=True)
     t0 = time.time()
     embs = encoder.encode(texts, batch_size=args.batch_size)
     t1 = time.time()
+    if args.profile:
+        if args.backend == "sglang-offline":
+            encoder.engine.stop_profile()
+        if args.backend == "sglang-online":
+            encoder.stop_profile()
 
     # ------------ 统一统计 & 输出 ------------
     dt = t1 - t0
@@ -389,18 +399,6 @@ def main():
     args = parse_args()
     encoder = build_encoder(args)
 
-    # SGLang-online profiling
-    prof_started = False
-    if args.backend == "sglang-online" and args.profile:
-        try:
-            print("[Profile] start server profiler")
-            encoder.start_profile(
-                steps=args.profile_steps, out_dir=args.profile_output_dir
-            )
-            prof_started = True
-        except Exception as e:
-            print(f"[Profile] start failed: {e}")
-
     # 1) Yahoo JSONL
     if args.yahoo_jsonl:
         run_unlabeled_yahoo(args, encoder)
@@ -457,14 +455,6 @@ def main():
             )
         except Exception as e:
             print(f"[MTEB] run failed: {e}")
-
-    # stop profiling
-    if args.backend == "sglang-online" and args.profile and prof_started:
-        try:
-            print("[Profile] stop server profiler")
-            encoder.stop_profile()
-        except Exception as e:
-            print(f"[Profile] stop failed: {e}")
 
     print("Done.")
 
