@@ -34,11 +34,11 @@ class SGLangEncoder:
             self._openai_client = openai.Client(base_url=f"{self.base_url}/v1",
                                                 api_key=(self.api_key or "None"))
 
-    def start_profile(self, num_steps: int = 20, output_dir: str = "") -> bool:
+    def start_profile(self, record_shapes: bool = False) -> bool:
         url = f"{self.base_url}/start_profile"
-        payload = {"num_steps": int(num_steps)}
-        if output_dir:
-            payload["output_dir"] = output_dir
+        payload = {"activities": ["CPU", "CUDA"]}
+        if record_shapes:
+            payload["record_shapes"] = True
         try:
             resp = self.session.post(url, json=payload, timeout=self.timeout)
             resp.raise_for_status()
