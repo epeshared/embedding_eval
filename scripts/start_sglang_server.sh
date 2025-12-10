@@ -9,8 +9,8 @@ echo "WORK_HOME=$WORK_HOME"
 ###############################################
 # MODEL_DIR="$WORK_HOME/models/openai/clip-vit-base-patch32"
 # MODEL_DIR="$WORK_HOME/models/openai/clip-vit-large-patch14-336"
-MODEL_DIR="$WORK_HOME/models/Qwen/Qwen3-Embedding-4B"
-# MODEL_DIR="$WORK_HOME/models/Qwen/Qwen3-Embedding-0.6B"
+MODEL_DIR="/home/xtang/models/Qwen/Qwen3-Embedding-4B"
+# MODEL_DIR="/home/xtang/models/Qwen/Qwen3-Embedding-0.6B"
 ###############################################
 echo "Using model: $MODEL_DIR"
 
@@ -51,7 +51,7 @@ BATCH_SIZE=16
 echo "Batch size = $BATCH_SIZE"
 
 # ===== 绑核与启动 =====
-numactl -C 0-7 \
+numactl -C 1-16,256-271 \
 python -m sglang.launch_server \
   --model-path "$MODEL_DIR" \
   --tokenizer-path "$MODEL_DIR" \

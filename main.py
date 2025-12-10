@@ -329,8 +329,23 @@ def run_unlabeled_yahoo(args, encoder) -> None:
             encoder.engine.start_profile(record_shapes=True)
         if args.backend == "sglang-online":
             encoder.start_profile(record_shapes=True)
+    # 批次级计时：按 batch_size 切分，逐批调用 encode，并统计每个 batch 的耗时
+    batch_size = max(1, int(args.batch_size))
+    embs_list = []
+    batch_times = []
     t0 = time.time()
-    embs = encoder.encode(texts, batch_size=args.batch_size)
+    for start in range(0, num_samples, batch_size):
+        end = min(start + batch_size, num_samples)
+        batch_texts = texts[start:end]
+        bs = len(batch_texts)
+        bt0 = time.time()
+        batch_embs = encoder.encode(batch_texts, batch_size=bs)
+        bt1 = time.time()
+        batch_dt = bt1 - bt0
+        batch_times.append(batch_dt)
+        embs_list.append(batch_embs)
+
+    embs = torch.cat(embs_list, dim=0) if embs_list else torch.empty(0)
     t1 = time.time()
     if args.profile:
         if args.backend == "sglang-offline":
@@ -341,7 +356,22 @@ def run_unlabeled_yahoo(args, encoder) -> None:
     # ------------ 统一统计 & 输出 ------------
     dt = t1 - t0
     qps = num_samples / dt if dt > 0 else float("inf")
-    print(f"[Yahoo] time={dt:.3f}s avg_QPS={qps:.2f} shape={tuple(embs.shape)}")
+
+    # 批次统计信息（不逐批打印，只在末尾汇总）
+    if batch_times:
+        avg_batch_time = sum(batch_times) / len(batch_times)
+        max_batch_time = max(batch_times)
+        min_batch_time = min(batch_times)
+    else:
+        avg_batch_time = max_batch_time = min_batch_time = 0.0
+
+    print(
+        f"[Yahoo] time={dt:.3f}s avg_QPS={qps:.2f} shape={tuple(embs.shape)}\n"
+        f"        batches={len(batch_times)}, "
+        f"avg_batch_time={avg_batch_time:.6f}s, "
+        f"min_batch_time={min_batch_time:.6f}s, "
+        f"max_batch_time={max_batch_time:.6f}s"
+    )
 
     # dump emb
     if args.dump_emb:
