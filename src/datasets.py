@@ -1,8 +1,14 @@
 import os, re, glob
-from typing import List, Tuple
-from datasets import load_dataset, load_from_disk, DatasetDict, Dataset
+from typing import List, Tuple, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from datasets import DatasetDict, Dataset
 
 def load_pairs(dataset_key: str, split: str, max_samples: int = -1):
+    # Lazy import: HF `datasets` pulls in `multiprocess` which can emit noisy shutdown
+    # warnings on some Python versions/environments. Only import when needed.
+    from datasets import load_dataset, load_from_disk
+
     """
     支持：
       - 远端：C-MTEB/LCQMC、clue/afqmc、paws-x:zh
@@ -35,9 +41,11 @@ def load_pairs(dataset_key: str, split: str, max_samples: int = -1):
 
     def _pick_split(ds_like, want_split: str):
         """根据 want_split 在 DatasetDict 中优先寻找 ['validation','valid','dev','test','train'] 的别名"""
-        if isinstance(ds_like, Dataset):
+        from datasets import DatasetDict as _DatasetDict, Dataset as _Dataset
+
+        if isinstance(ds_like, _Dataset):
             return ds_like
-        if not isinstance(ds_like, DatasetDict):
+        if not isinstance(ds_like, _DatasetDict):
             raise ValueError(f"Unexpected dataset type: {type(ds_like)}")
 
         want = want_split.lower()

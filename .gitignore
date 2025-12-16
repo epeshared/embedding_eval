@@ -13,4 +13,4 @@ scripts/runs/*
 onednn_logs/*
 *.log
 scripts/sglang_logs/*
-src/customer/t/logs*
+src/customer/t/logs*r

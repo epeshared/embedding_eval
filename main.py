@@ -111,6 +111,28 @@ def _try_import():
         except Exception:
             mods["vllm_cls"] = None
 
+    # transformers backend
+    try:
+        from src.backends.transformers_backend import TransformersEncoder as _TR
+        mods["tr_cls"] = _TR
+    except Exception:
+        try:
+            from transformers_backend import TransformersEncoder as _TR  # type: ignore[import-not-found]
+            mods["tr_cls"] = _TR
+        except Exception:
+            mods["tr_cls"] = None
+
+    # CLIP backend
+    try:
+        from src.backends.clip_backend import CLIPEncoder as _CLIP
+        mods["clip_cls"] = _CLIP
+    except Exception:
+        try:
+            from clip_backend import CLIPEncoder as _CLIP  # type: ignore[import-not-found]
+            mods["clip_cls"] = _CLIP
+        except Exception:
+            mods["clip_cls"] = None
+
     return mods
 
 
@@ -123,6 +145,8 @@ SGLangEncoder = mods["sgl_cls"]
 SGLangOfflineEncoder = mods["sgl_offline_cls"]
 VllmOpenAIEncoder = mods["vllm_oai_cls"]
 VLLMEncoder = mods["vllm_cls"]
+TransformersEncoder = mods["tr_cls"]
+CLIPEncoder = mods["clip_cls"]
 
 
 # ---------------- argparse ----------------
@@ -167,6 +191,15 @@ def parse_args():
     p.add_argument("--output-csv", type=str, default="")
     p.add_argument("--output-jsonl", type=str, default="")
 
+    # perf modality
+    p.add_argument(
+        "--modality",
+        type=str,
+        default="text",
+        choices=["text", "image"],
+        help="Throughput benchmark modality: text uses --yahoo-jsonl; image uses --image-dir/--image-glob",
+    )
+
     # unlabeled (Yahoo JSONL)
     p.add_argument("--yahoo-jsonl", type=str, default="")
     p.add_argument("--yahoo-mode", type=str, default="q", choices=["q", "q+a"])
@@ -174,6 +207,31 @@ def parse_args():
     p.add_argument("--dump-emb", type=str, default="")
     p.add_argument("--dump-img-emb", type=str, default="")
     p.add_argument("--dump-txt-emb", type=str, default="")
+
+    # image throughput input
+    p.add_argument("--image-dir", type=str, default="", help="Directory containing images for image embedding benchmark")
+    p.add_argument("--image-glob", type=str, default="", help="Glob pattern for images (e.g., '/data/*.jpg' or '/data/**/*.png')")
+    p.add_argument("--image-max", type=int, default=10000, help="Max number of images to load for image benchmark")
+
+    # flickr8k perf
+    p.add_argument(
+        "--flickr8k-images-dir",
+        type=str,
+        default="./src/customer/t/datasets/Flickr8k/Flicker8k_Dataset",
+        help="Flickr8k images directory (contains *.jpg)",
+    )
+    p.add_argument(
+        "--flickr8k-captions-file",
+        type=str,
+        default="./src/customer/t/datasets/Flickr8k/Flickr8k.token.txt",
+        help="Flickr8k.token.txt path",
+    )
+    p.add_argument(
+        "--flickr8k-captions-per-image",
+        type=int,
+        default=1,
+        help="How many captions per image to embed (default 1; Flickr8k typically has 5)",
+    )
 
     # 并发控制（目前仅用于记录和日志，不再触发多进程）
     p.add_argument(
@@ -225,9 +283,61 @@ def to_bool(x: str) -> bool:
     return str(x).lower() in ("1", "true", "yes", "on")
 
 
+def _detect_local_hf_architectures(model_path_or_id: str) -> List[str]:
+    """Best-effort: read architectures from a local HF model directory."""
+    if not model_path_or_id or (not os.path.isdir(model_path_or_id)):
+        return []
+    cfg_path = os.path.join(model_path_or_id, "config.json")
+    if not os.path.exists(cfg_path):
+        return []
+    try:
+        with open(cfg_path, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+        arch = cfg.get("architectures", [])
+        if isinstance(arch, str):
+            return [arch]
+        if isinstance(arch, list):
+            return [str(a) for a in arch]
+    except Exception:
+        return []
+    return []
+
+
+def _looks_like_clip_model(model_path_or_id: str) -> bool:
+    s = (model_path_or_id or "").lower()
+    if "clip" in s:
+        return True
+    archs = _detect_local_hf_architectures(model_path_or_id)
+    return any(a == "CLIPModel" for a in archs)
+
+
 # ---------------- build_encoder ----------------
 def build_encoder(args):
     backend = args.backend
+
+    if backend == "transformers":
+        if TransformersEncoder is None:
+            raise RuntimeError("TransformersEncoder not available")
+        return TransformersEncoder(
+            model_name=args.model,
+            device=args.device,
+            use_ipex=args.use_ipex,
+            amp=args.amp,
+            max_length=args.max_length,
+            offline=to_bool(args.offline),
+            trust_remote_code=to_bool(args.trust_remote_code),
+        )
+
+    if backend == "clip":
+        if CLIPEncoder is None:
+            raise RuntimeError("CLIPEncoder not available")
+        return CLIPEncoder(
+            model_name=args.model,
+            device=args.device,
+            use_ipex=args.use_ipex,
+            amp=args.amp,
+            offline=to_bool(args.offline),
+        )
 
     if backend == "sglang-online":
         if SGLangEncoder is None:
@@ -242,6 +352,15 @@ def build_encoder(args):
     elif backend == "sglang-offline":
         if SGLangOfflineEncoder is None:
             raise RuntimeError("SGLangOfflineEncoder not available")
+
+        # sglang-offline Engine currently doesn't register a CLIP multimodal processor,
+        # so initializing it with CLIPModel crashes with a confusing error.
+        if _looks_like_clip_model(args.model):
+            raise RuntimeError(
+                "Backend 'sglang-offline' is not supported for CLIP models. "
+                "Use --backend clip for local CLIP, or --backend sglang-online to talk to a running SGLang server."
+            )
+
         if args.device == "cpu":
             attn_backend = "intel_amx"
         elif args.device == "cuda":
@@ -287,6 +406,148 @@ def build_encoder(args):
 
     else:
         raise NotImplementedError(f"Backend '{backend}' is not implemented in this entry.")
+
+
+def _load_image_inputs(args) -> List[str]:
+    """Load image inputs as paths (strings)."""
+    import glob
+
+    exts = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+    paths: List[str] = []
+    if getattr(args, "image_glob", ""):
+        paths = glob.glob(args.image_glob, recursive=True)
+    elif getattr(args, "image_dir", ""):
+        root = args.image_dir
+        for dirpath, _, filenames in os.walk(root):
+            for fn in filenames:
+                p = os.path.join(dirpath, fn)
+                if os.path.splitext(p)[1].lower() in exts:
+                    paths.append(p)
+    paths = [p for p in paths if os.path.splitext(p)[1].lower() in exts]
+    paths.sort()
+    max_n = int(getattr(args, "image_max", 10000) or 0)
+    if max_n > 0:
+        paths = paths[:max_n]
+    return paths
+
+
+def run_unlabeled_images(args, encoder) -> None:
+    """Image embedding throughput benchmark."""
+    image_inputs = _load_image_inputs(args)
+    if not image_inputs:
+        print("[Image] No images loaded. Provide --image-dir or --image-glob.")
+        return
+    if not hasattr(encoder, "encode_images"):
+        raise RuntimeError(
+            f"Backend '{args.backend}' does not support image embeddings (missing encode_images)."
+        )
+
+    num_samples = len(image_inputs)
+    num_threads = max(1, int(getattr(args, "num_threads", 1)))
+    print(
+        f"[Image] total={num_samples}, batch_size={args.batch_size}, num_threads={num_threads}, backend={args.backend}"
+    )
+
+    # warm-up
+    warmup_n = min(num_samples, max(1, int(args.batch_size)))
+    print(f"[Image] warm-up {warmup_n} samples ...")
+    try:
+        _ = encoder.encode_images(image_inputs[:warmup_n], batch_size=warmup_n)
+    except Exception as e:
+        print(f"[Image] warm-up failed: {e}")
+
+    if args.profile:
+        if args.backend == "sglang-offline":
+            encoder.engine.start_profile(record_shapes=True)
+        if args.backend == "sglang-online":
+            encoder.start_profile(record_shapes=True)
+
+    batch_size = max(1, int(args.batch_size))
+    embs_list = []
+    batch_times = []
+    t0 = time.time()
+    for start in range(0, num_samples, batch_size):
+        end = min(start + batch_size, num_samples)
+        batch_imgs = image_inputs[start:end]
+        bs = len(batch_imgs)
+        bt0 = time.time()
+        batch_embs = encoder.encode_images(batch_imgs, batch_size=bs)
+        bt1 = time.time()
+        batch_times.append(bt1 - bt0)
+        embs_list.append(batch_embs)
+
+    embs = torch.cat(embs_list, dim=0) if embs_list else torch.empty(0)
+    t1 = time.time()
+
+    if args.profile:
+        if args.backend == "sglang-offline":
+            encoder.engine.stop_profile()
+        if args.backend == "sglang-online":
+            encoder.stop_profile()
+
+    dt = t1 - t0
+    qps = num_samples / dt if dt > 0 else float("inf")
+    if batch_times:
+        avg_batch_time = sum(batch_times) / len(batch_times)
+        max_batch_time = max(batch_times)
+        min_batch_time = min(batch_times)
+    else:
+        avg_batch_time = max_batch_time = min_batch_time = 0.0
+
+    print(
+        f"[Image] time={dt:.3f}s avg_QPS={qps:.2f} shape={tuple(embs.shape)}\n"
+        f"        batches={len(batch_times)}, "
+        f"avg_batch_time={avg_batch_time:.6f}s, "
+        f"min_batch_time={min_batch_time:.6f}s, "
+        f"max_batch_time={max_batch_time:.6f}s"
+    )
+
+    if args.dump_img_emb:
+        os.makedirs(os.path.dirname(args.dump_img_emb) or ".", exist_ok=True)
+        torch.save(embs.cpu(), args.dump_img_emb)
+        print(f"[Save] image embeddings -> {args.dump_img_emb}")
+
+    if args.output_jsonl:
+        rec = {
+            "count": num_samples,
+            "time_sec": dt,
+            "avg_qps": qps,
+            "batch_size": args.batch_size,
+            "model": args.model,
+            "backend": args.backend,
+            "num_threads": num_threads,
+            "modality": "image",
+        }
+        try:
+            utils.append_jsonl(args.output_jsonl, rec)
+        except Exception:
+            with open(args.output_jsonl, "a", encoding="utf-8") as f:
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        print(f"[Save] jsonl -> {args.output_jsonl}")
+
+    if args.output_csv:
+        row = {
+            "count": num_samples,
+            "time_sec": dt,
+            "avg_qps": qps,
+            "batch_size": args.batch_size,
+            "model": args.model,
+            "backend": args.backend,
+            "num_threads": num_threads,
+            "modality": "image",
+        }
+        try:
+            utils.append_csv(args.output_csv, row, header_if_new=True)
+        except Exception:
+            import csv
+
+            new = not os.path.exists(args.output_csv)
+            with open(args.output_csv, "a", newline="", encoding="utf-8") as f:
+                w = csv.DictWriter(f, fieldnames=list(row.keys()))
+                if new:
+                    w.writeheader()
+                w.writerow(row)
+        print(f"[Save] csv -> {args.output_csv}")
 
 
 # ---------------- Yahoo JSONL pipeline ----------------
@@ -429,51 +690,50 @@ def main():
     args = parse_args()
     encoder = build_encoder(args)
 
-    # 1) Yahoo JSONL
+    if args.modality == "image":
+        run_unlabeled_images(args, encoder)
+        print("Done.")
+        return
+
+    # text modality
     if args.yahoo_jsonl:
         run_unlabeled_yahoo(args, encoder)
 
-    # 2) 普通 evals
     ds_list = [s.strip() for s in (args.datasets or "").split(",") if s.strip()]
     if ds_list:
         for ds in ds_list:
             ds_upper = ds.upper()
-            if ds_upper == "FOOD101":
+            if ds_upper in ("FLICKR8K", "FLICKER8K"):
                 try:
-                    evals.eval_food101_zeroshot(
+                    evals.eval_flickr8k_perf(
                         encoder=encoder,
-                        model_name=args.model,
-                        split=args.split,
+                        images_dir=args.flickr8k_images_dir,
+                        captions_file=args.flickr8k_captions_file,
                         batch_size=args.batch_size,
+                        max_images=args.max_samples,
+                        captions_per_image=args.flickr8k_captions_per_image,
                         dump_img_emb=args.dump_img_emb,
                         dump_txt_emb=args.dump_txt_emb,
                         output_csv=args.output_csv,
+                        output_jsonl=args.output_jsonl,
                     )
                 except Exception as e:
-                    print(f"[FOOD101] eval failed: {e}")
+                    print(f"[Flickr8k] eval failed: {e}")
             else:
                 try:
                     evals.eval_dataset_text_pairs(
-                        encoder=encoder,
-                        dataset_name=ds,
+                        encoder,
+                        dataset_key=ds,
                         split=args.split,
-                        max_samples=(
-                            None if args.max_samples <= 0 else args.max_samples
-                        ),
                         batch_size=args.batch_size,
-                        output_csv=args.output_csv,
+                        max_samples=args.max_samples,
                     )
                 except Exception as e:
                     print(f"[{ds}] eval failed: {e}")
 
-    # 3) MTEB
     if args.mteb and mteb is not None:
-        task_langs = [
-            s.strip() for s in (args.mteb_langs or "").split(",") if s.strip()
-        ] or None
-        task_types = [
-            s.strip() for s in (args.mteb_task_types or "").split(",") if s.strip()
-        ] or None
+        task_langs = [s.strip() for s in (args.mteb_langs or "").split(",") if s.strip()] or None
+        task_types = [s.strip() for s in (args.mteb_task_types or "").split(",") if s.strip()] or None
         try:
             mteb.run_mteb(
                 encoder=encoder,

@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Usage:
+#   ./bench_flickr8k_sglang.sh online
+#   ./bench_flickr8k_sglang.sh offline
+#
+# Common env overrides:
+#   BATCH_LIST_STR="1 2 4 8 16 32 64 128"
+#   MAX_SAMPLES=1000                 # used for Flickr8k: max number of images
+#   CAPTIONS_PER_IMAGE=1             # Flickr8k typically has 5
+#   FLICKR8K_IMAGES_DIR=/path/to/Flicker8k_Dataset
+#   FLICKR8K_CAPTIONS_FILE=/path/to/Flickr8k.token.txt
+#
+# Online-only env:
+#   MODEL_PATH="Qwen/Qwen3-Embedding-4B"
+#   SGL_URL="http://127.0.0.1:30000"
+#   SGL_API="v1"                    # v1|native|openai (image embedding requires v1/openai)
+#   SGL_API_KEY=""
+#
+# Offline-only env:
+#   MODEL_DIR="/abs/path/to/model_dir"
+#   DEVICE="cpu"                    # cpu|cuda
+
+MODE="${1:-${MODE:-offline}}"
+
+WORK_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")"/.. && pwd)"
+echo "WORK_HOME=$WORK_HOME"
+
+FLICKR8K_IMAGES_DIR="${FLICKR8K_IMAGES_DIR:-$WORK_HOME/src/customer/t/datasets/Flickr8k/Flicker8k_Dataset}"
+FLICKR8K_CAPTIONS_FILE="${FLICKR8K_CAPTIONS_FILE:-$WORK_HOME/src/customer/t/datasets/Flickr8k/Flickr8k.token.txt}"
+
+BATCH_LIST_STR="${BATCH_LIST_STR:-100}"
+read -r -a BATCH_LIST <<<"$BATCH_LIST_STR"
+
+MAX_SAMPLES="${MAX_SAMPLES:-1000}"
+CAPTIONS_PER_IMAGE="${CAPTIONS_PER_IMAGE:-1}"
+
+RUNS_DIR="${RUNS_DIR:-$WORK_HOME/runs}"
+LOG_DIR="${LOG_DIR:-$WORK_HOME/scripts/logs}"
+mkdir -p "$RUNS_DIR" "$LOG_DIR"
+
+BASE_ARGS=(
+  --datasets FLICKR8K
+  --flickr8k-images-dir "$FLICKR8K_IMAGES_DIR"
+  --flickr8k-captions-file "$FLICKR8K_CAPTIONS_FILE"
+  --flickr8k-captions-per-image "$CAPTIONS_PER_IMAGE"
+  --max-samples "$MAX_SAMPLES"
+)
+
+case "$MODE" in
+  online|sglang-online)
+    MODEL_PATH="${MODEL_PATH:-openai/clip-vit-base-patch32}"
+    SGL_URL="${SGL_URL:-http://127.0.0.1:30000}"
+    SGL_API="${SGL_API:-v1}"
+    SGL_API_KEY="${SGL_API_KEY:-}"
+
+    BACKEND_ARGS=(
+      --backend sglang-online
+      --model "$MODEL_PATH"
+      --sgl-url "$SGL_URL"
+      --sgl-api "$SGL_API"
+      --sgl-api-key "$SGL_API_KEY"
+    )
+    MODE_TAG="online_${SGL_API}"
+    ;;
+
+  offline|sglang-offline)
+    MODEL_DIR="${MODEL_DIR:-/home/xtang/models/openai/clip-vit-base-patch32/}"
+    DEVICE="${DEVICE:-cpu}"
+
+    BACKEND_ARGS=(
+      # NOTE: sglang-offline (Engine) does not support CLIPModel multimodal processor init.
+      # For local/offline CLIP (text+image embeddings), use the repo's native CLIP backend.
+      --backend clip
+      --model "$MODEL_DIR"
+      --device "$DEVICE"
+    )
+    MODE_TAG="offline_${DEVICE}"
+    ;;
+
+  *)
+    echo "Unknown MODE: '$MODE' (use 'online' or 'offline')" >&2
+    exit 1
+    ;;
+esac
+
+for BATCH_SIZE in "${BATCH_LIST[@]}"; do
+  echo "=============================="
+  echo "Flickr8k bench: mode=$MODE_TAG batch_size=$BATCH_SIZE max_samples=$MAX_SAMPLES captions_per_image=$CAPTIONS_PER_IMAGE"
+  echo "images_dir=$FLICKR8K_IMAGES_DIR"
+  echo "captions_file=$FLICKR8K_CAPTIONS_FILE"
+  echo "=============================="
+
+  OUT_CSV="$RUNS_DIR/flickr8k_${MODE_TAG}_bs${BATCH_SIZE}.csv"
+  OUT_JSONL="$RUNS_DIR/flickr8k_${MODE_TAG}_bs${BATCH_SIZE}.jsonl"
+  LOG_FILE="$LOG_DIR/flickr8k_${MODE_TAG}_bs${BATCH_SIZE}.log"
+
+  echo "[Run] logging to: $LOG_FILE"
+  # Stream output to screen and also save to log.
+  python "$WORK_HOME/main.py" \
+    "${BACKEND_ARGS[@]}" \
+    --batch-size "$BATCH_SIZE" \
+    --output-csv "$OUT_CSV" \
+    --output-jsonl "$OUT_JSONL" \
+    "${BASE_ARGS[@]}" \
+    2>&1 | tee "$LOG_FILE"
+
+  echo "Saved: $OUT_CSV"
+  echo "Log:   $LOG_FILE"
+done
+
+echo "All done."

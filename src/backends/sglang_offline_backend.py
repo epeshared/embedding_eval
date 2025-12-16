@@ -1,10 +1,10 @@
 import os
-from typing import Optional, List
+from typing import Optional, List, Any, Union
 import torch
 import dataclasses
 
-from sglang.srt.server_args import ServerArgs
-import sglang as sgl
+from sglang.srt.server_args import ServerArgs  # type: ignore[import-untyped]
+import sglang as sgl  # type: ignore[import-untyped]
 
 
 class SGLangOfflineEncoder:
@@ -53,7 +53,7 @@ class SGLangOfflineEncoder:
         print("[Init:sglang] Engine kwargs:", engine_kwargs)
 
         # ======= 纯 offline 模式 ========
-        self.engine = sgl.Engine(**engine_kwargs)
+        self.engine = sgl.Engine(**engine_kwargs)  # type: ignore[attr-defined]
 
     @torch.inference_mode()
     def encode(
@@ -69,6 +69,43 @@ class SGLangOfflineEncoder:
         for i in range(0, len(texts), batch_size):
             batch = texts[i: i + batch_size]
             outputs = self.engine.encode(batch)
+            embs = torch.tensor([o["embedding"] for o in outputs])
+            if normalize:
+                embs = torch.nn.functional.normalize(embs, p=2, dim=1)
+            all_chunks.append(embs)
+
+        return torch.cat(all_chunks, dim=0)
+
+    @torch.inference_mode()
+    def encode_images(
+        self,
+        images: List[Union[Any, str, dict]],
+        batch_size: int = 128,
+        normalize: bool = True,
+    ) -> torch.Tensor:
+        """Encode images into embeddings.
+
+        Args:
+            images: One image per sample. Each item can be a PIL.Image.Image,
+                a local file path, an URL, a base64 string, or an sglang ImageData-like dict.
+                (See sglang's multimodal input conventions.)
+            batch_size: Number of images per batch.
+            normalize: Whether to L2-normalize embeddings.
+
+        Returns:
+            A tensor of shape (N, D).
+        """
+        if not images:
+            return torch.empty(0, 0)
+
+        all_chunks: List[torch.Tensor] = []
+        for i in range(0, len(images), batch_size):
+            batch_images = images[i : i + batch_size]
+            # For image-only embedding, provide a dummy prompt; sglang requires `prompt`.
+            dummy_prompts = [""] * len(batch_images)
+            outputs = self.engine.encode(dummy_prompts, image_data=batch_images)
+
+            # sglang returns a list of dicts: [{"embedding": [...], "meta_info": {...}}, ...]
             embs = torch.tensor([o["embedding"] for o in outputs])
             if normalize:
                 embs = torch.nn.functional.normalize(embs, p=2, dim=1)

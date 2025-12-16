@@ -1,6 +1,5 @@
-
 import os
-from typing import List, Optional
+from typing import List, Optional, Union, Any
 import torch
 
 class CLIPEncoder:
@@ -30,13 +29,22 @@ class CLIPEncoder:
         self._IPEX_enabled = False
         if self.device.type == "cpu" and self.use_ipex:
             try:
-                import intel_extension_for_pytorch as ipex  # noqa: F401
+                import importlib
+
+                ipex = importlib.import_module("intel_extension_for_pytorch")
                 self.model = ipex.optimize(self.model, dtype=torch.bfloat16, inplace=True)
                 self.cpu_amp_dtype = torch.bfloat16
                 self._IPEX_enabled = True
                 print("[Init:CLIP] IPEX enabled (bf16).")
             except Exception as e:
                 print(f"[Warn] IPEX optimize failed, fallback to plain PyTorch: {e}")
+
+    @torch.inference_mode()
+    def encode(self, texts: List[str], batch_size: int = 256, normalize: bool = True) -> torch.Tensor:
+        feats = self.encode_text(texts, batch_size=batch_size)
+        if normalize:
+            feats = torch.nn.functional.normalize(feats, p=2, dim=-1)
+        return feats
 
     @torch.inference_mode()
     def encode_text(self, prompts: List[str], batch_size: int = 256) -> torch.Tensor:
@@ -59,12 +67,29 @@ class CLIPEncoder:
         return torch.cat(feats, dim=0)
 
     @torch.inference_mode()
-    def encode_images(self, images: List["PIL.Image.Image"], batch_size: int = 128) -> torch.Tensor:
+    def encode_images(self, images: List[Union[str, Any]], batch_size: int = 128) -> torch.Tensor:
         dev = self.device.type
         feats = []
         for i in range(0, len(images), batch_size):
             batch = images[i:i+batch_size]
-            inputs = self.processor(images=batch, return_tensors="pt").to(self.device)
+
+            # Flickr8k pipeline passes file paths; support both PIL images and local paths.
+            if batch and isinstance(batch[0], str):
+                from PIL import Image
+
+                pil_batch = []
+                for p in batch:
+                    if not isinstance(p, str):
+                        raise TypeError(f"encode_images received mixed types in batch: {type(p)}")
+                    if not os.path.exists(p):
+                        raise FileNotFoundError(f"Image path not found: {p}")
+                    with Image.open(p) as im:
+                        pil_batch.append(im.convert("RGB"))
+                batch_inputs = pil_batch
+            else:
+                batch_inputs = batch
+
+            inputs = self.processor(images=batch_inputs, return_tensors="pt").to(self.device)
             if dev == "cpu" and getattr(self, "_IPEX_enabled", False) and self.cpu_amp_dtype is not None and self.amp in ("bf16","auto"):
                 with torch.autocast("cpu", dtype=self.cpu_amp_dtype):
                     v = self.model.get_image_features(**inputs)

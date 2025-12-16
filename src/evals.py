@@ -2,8 +2,155 @@ import time, os
 from typing import Dict, List
 import torch
 from sklearn.metrics import accuracy_score, f1_score
-from datasets import load_dataset
 from .utils import batched_cosine_similarity, l2_normalize
+
+
+def _read_flickr8k_captions(token_txt: str) -> Dict[str, List[str]]:
+    """Flickr8k.token.txt -> {filename: [captions...]}"""
+    mp: Dict[str, List[str]] = {}
+    with open(token_txt, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            left, cap = line.split("\t", 1)
+            img, _ = left.split("#", 1)
+            mp.setdefault(img, []).append(cap)
+    return mp
+
+
+@torch.inference_mode()
+def eval_flickr8k_perf(
+    encoder,
+    images_dir: str,
+    captions_file: str,
+    batch_size: int = 128,
+    max_images: int = -1,
+    captions_per_image: int = 1,
+    dump_img_emb: str = "",
+    dump_txt_emb: str = "",
+    output_csv: str = "",
+    output_jsonl: str = "",
+) -> Dict:
+    """Throughput benchmark on Flickr8k: run text embedding and image embedding.
+
+    Requires encoder to provide:
+      - encode(texts: List[str], batch_size=...)
+      - encode_images(images: List[...], batch_size=...)
+    """
+    if not hasattr(encoder, "encode"):
+        raise RuntimeError("Encoder does not support text embedding (missing encode).")
+    if not hasattr(encoder, "encode_images"):
+        raise RuntimeError("Encoder does not support image embedding (missing encode_images).")
+
+    cap_map = _read_flickr8k_captions(captions_file)
+    if not cap_map:
+        raise RuntimeError("Flickr8k captions are empty.")
+
+    # Build aligned (image_path, captions...) list
+    image_paths: List[str] = []
+    texts: List[str] = []
+    per_img = max(1, int(captions_per_image))
+    for fn, caps in sorted(cap_map.items()):
+        p = os.path.join(images_dir, fn)
+        if not os.path.exists(p):
+            continue
+        image_paths.append(p)
+        if not caps:
+            texts.append("")
+        else:
+            take = caps[:per_img] if len(caps) >= per_img else (caps + caps[: (per_img - len(caps))])
+            texts.extend(take)
+        if max_images > 0 and len(image_paths) >= max_images:
+            break
+
+    if not image_paths:
+        raise RuntimeError("No Flickr8k images found matching captions file.")
+
+    n_images = len(image_paths)
+    n_texts = len(texts)
+    print(f"[Eval] Flickr8k perf: images={n_images}, texts={n_texts} (captions_per_image={per_img})")
+
+    # Text
+    t0 = time.time()
+    txt_emb = encoder.encode(texts, batch_size=batch_size)
+    t1 = time.time()
+    txt_time = t1 - t0
+    txt_qps = n_texts / txt_time if txt_time > 0 else 0.0
+    txt_batches = (n_texts + batch_size - 1) // batch_size
+    txt_avg_batch_sec = (txt_time / txt_batches) if txt_batches > 0 else 0.0
+
+    # Image
+    v0 = time.time()
+    img_emb = encoder.encode_images(image_paths, batch_size=batch_size)
+    v1 = time.time()
+    img_time = v1 - v0
+    img_qps = n_images / img_time if img_time > 0 else 0.0
+    img_batches = (n_images + batch_size - 1) // batch_size
+    img_avg_batch_sec = (img_time / img_batches) if img_batches > 0 else 0.0
+
+    print(
+        f"[flickr8k] text: n={n_texts} time={txt_time:.3f}s QPS={txt_qps:.2f} "
+        f"avg_batch={txt_avg_batch_sec:.4f}s ({txt_avg_batch_sec*1000:.2f}ms) shape={tuple(txt_emb.shape)} | "
+        f"image: n={n_images} time={img_time:.3f}s QPS={img_qps:.2f} "
+        f"avg_batch={img_avg_batch_sec:.4f}s ({img_avg_batch_sec*1000:.2f}ms) shape={tuple(img_emb.shape)}"
+    )
+
+    if dump_txt_emb:
+        os.makedirs(os.path.dirname(dump_txt_emb) or ".", exist_ok=True)
+        torch.save({"texts": texts, "embeddings": txt_emb}, dump_txt_emb)
+        print(f"[Dump] text embeddings -> {dump_txt_emb}")
+    if dump_img_emb:
+        os.makedirs(os.path.dirname(dump_img_emb) or ".", exist_ok=True)
+        torch.save({"images": image_paths, "embeddings": img_emb}, dump_img_emb)
+        print(f"[Dump] image embeddings -> {dump_img_emb}")
+
+    rec = {
+        "dataset": "flickr8k",
+        "n_images": n_images,
+        "n_texts": n_texts,
+        "captions_per_image": per_img,
+        "batch_size": batch_size,
+        "text_time_sec": round(txt_time, 6),
+        "text_qps": txt_qps,
+        "text_batches": int(txt_batches),
+        "text_avg_batch_sec": round(txt_avg_batch_sec, 6),
+        "image_time_sec": round(img_time, 6),
+        "image_qps": img_qps,
+        "image_batches": int(img_batches),
+        "image_avg_batch_sec": round(img_avg_batch_sec, 6),
+    }
+
+    # Optional logging (best-effort)
+    if output_jsonl:
+        try:
+            from . import utils as _utils
+            _utils.append_jsonl(output_jsonl, rec, {})
+        except Exception:
+            import json
+
+            os.makedirs(os.path.dirname(output_jsonl) or ".", exist_ok=True)
+            with open(output_jsonl, "a", encoding="utf-8") as f:
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        print(f"[Save] jsonl -> {output_jsonl}")
+
+    if output_csv:
+        try:
+            from . import utils as _utils
+            _utils.append_csv(output_csv, rec, {})
+        except Exception:
+            import csv
+
+            os.makedirs(os.path.dirname(output_csv) or ".", exist_ok=True)
+            new = (not os.path.exists(output_csv)) or os.path.getsize(output_csv) == 0
+            with open(output_csv, "a", newline="", encoding="utf-8") as f:
+                w = csv.DictWriter(f, fieldnames=list(rec.keys()))
+                if new:
+                    w.writeheader()
+                w.writerow(rec)
+        print(f"[Save] csv -> {output_csv}")
+
+    return rec
 
 @torch.inference_mode()
 def eval_dataset_text_pairs(encoder, dataset_key: str, split: str="validation",
@@ -26,6 +173,9 @@ def eval_food101_zeroshot(clip, split: str="validation",
                           prompt_template: str = "a photo of a {}",
                           dump_img_emb: str = "", dump_txt_emb: str = "") -> Dict:
     print(f"[Eval] Food-101 ({split})")
+    # Lazy import: HF datasets pulls in `multiprocess`, which can emit noisy shutdown
+    # warnings on some Python versions/environments. Only import when needed.
+    from datasets import load_dataset
     ds = load_dataset("food101", split=split)
     label_names = ds.features["label"].names
     prompts = [prompt_template.format(name.replace("_", " ")) for name in label_names]
