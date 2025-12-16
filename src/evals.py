@@ -27,86 +27,129 @@ def eval_flickr8k_perf(
     batch_size: int = 128,
     max_images: int = -1,
     captions_per_image: int = 1,
+    modality: str = "both",
     dump_img_emb: str = "",
     dump_txt_emb: str = "",
     output_csv: str = "",
     output_jsonl: str = "",
 ) -> Dict:
-    """Throughput benchmark on Flickr8k: run text embedding and image embedding.
+    """Throughput benchmark on Flickr8k.
+
+    modality:
+      - "both": run text embedding and image embedding (default; backwards compatible)
+      - "text": run caption text embedding only (does NOT require images to exist)
+      - "image": run image embedding only
 
     Requires encoder to provide:
-      - encode(texts: List[str], batch_size=...)
-      - encode_images(images: List[...], batch_size=...)
+      - for text: encode(texts: List[str], batch_size=...)
+      - for image: encode_images(images: List[...], batch_size=...)
     """
-    if not hasattr(encoder, "encode"):
+
+    modality = (modality or "both").lower().strip()
+    if modality not in ("both", "text", "image"):
+        raise ValueError("modality must be one of: both|text|image")
+
+    if modality in ("both", "text") and not hasattr(encoder, "encode"):
         raise RuntimeError("Encoder does not support text embedding (missing encode).")
-    if not hasattr(encoder, "encode_images"):
+    if modality in ("both", "image") and not hasattr(encoder, "encode_images"):
         raise RuntimeError("Encoder does not support image embedding (missing encode_images).")
 
     cap_map = _read_flickr8k_captions(captions_file)
     if not cap_map:
         raise RuntimeError("Flickr8k captions are empty.")
 
-    # Build aligned (image_path, captions...) list
     image_paths: List[str] = []
     texts: List[str] = []
     per_img = max(1, int(captions_per_image))
-    for fn, caps in sorted(cap_map.items()):
-        p = os.path.join(images_dir, fn)
-        if not os.path.exists(p):
-            continue
-        image_paths.append(p)
-        if not caps:
-            texts.append("")
-        else:
-            take = caps[:per_img] if len(caps) >= per_img else (caps + caps[: (per_img - len(caps))])
-            texts.extend(take)
-        if max_images > 0 and len(image_paths) >= max_images:
-            break
 
-    if not image_paths:
+    for fn, caps in sorted(cap_map.items()):
+        if modality in ("both", "image"):
+            p = os.path.join(images_dir, fn)
+            if not os.path.exists(p):
+                continue
+            image_paths.append(p)
+
+        if modality in ("both", "text"):
+            if not caps:
+                take = [""] * per_img
+            else:
+                take = caps[:per_img] if len(caps) >= per_img else (caps + caps[: (per_img - len(caps))])
+            texts.extend(take)
+
+        if max_images > 0:
+            if modality in ("both", "image"):
+                if len(image_paths) >= max_images:
+                    break
+            else:
+                if (len(texts) // per_img) >= max_images:
+                    break
+
+    if modality in ("both", "image") and not image_paths:
         raise RuntimeError("No Flickr8k images found matching captions file.")
+    if modality in ("both", "text") and not texts:
+        raise RuntimeError("No Flickr8k captions found.")
 
     n_images = len(image_paths)
     n_texts = len(texts)
-    print(f"[Eval] Flickr8k perf: images={n_images}, texts={n_texts} (captions_per_image={per_img})")
+    print(
+        f"[Eval] Flickr8k perf: modality={modality} images={n_images}, texts={n_texts} "
+        f"(captions_per_image={per_img})"
+    )
 
-    # Text
-    t0 = time.time()
-    txt_emb = encoder.encode(texts, batch_size=batch_size)
-    t1 = time.time()
-    txt_time = t1 - t0
-    txt_qps = n_texts / txt_time if txt_time > 0 else 0.0
-    txt_batches = (n_texts + batch_size - 1) // batch_size
-    txt_avg_batch_sec = (txt_time / txt_batches) if txt_batches > 0 else 0.0
+    txt_emb = None
+    img_emb = None
 
-    # Image
-    v0 = time.time()
-    img_emb = encoder.encode_images(image_paths, batch_size=batch_size)
-    v1 = time.time()
-    img_time = v1 - v0
-    img_qps = n_images / img_time if img_time > 0 else 0.0
-    img_batches = (n_images + batch_size - 1) // batch_size
-    img_avg_batch_sec = (img_time / img_batches) if img_batches > 0 else 0.0
+    if modality in ("both", "text"):
+        t0 = time.time()
+        txt_emb = encoder.encode(texts, batch_size=batch_size)
+        t1 = time.time()
+        txt_time = t1 - t0
+        txt_qps = n_texts / txt_time if txt_time > 0 else 0.0
+        txt_batches = (n_texts + batch_size - 1) // batch_size
+        txt_avg_batch_sec = (txt_time / txt_batches) if txt_batches > 0 else 0.0
+        txt_shape = tuple(txt_emb.shape)
+    else:
+        txt_time = 0.0
+        txt_qps = 0.0
+        txt_batches = 0
+        txt_avg_batch_sec = 0.0
+        txt_shape = None
+
+    if modality in ("both", "image"):
+        v0 = time.time()
+        img_emb = encoder.encode_images(image_paths, batch_size=batch_size)
+        v1 = time.time()
+        img_time = v1 - v0
+        img_qps = n_images / img_time if img_time > 0 else 0.0
+        img_batches = (n_images + batch_size - 1) // batch_size
+        img_avg_batch_sec = (img_time / img_batches) if img_batches > 0 else 0.0
+        img_shape = tuple(img_emb.shape)
+    else:
+        img_time = 0.0
+        img_qps = 0.0
+        img_batches = 0
+        img_avg_batch_sec = 0.0
+        img_shape = None
 
     print(
         f"[flickr8k] text: n={n_texts} time={txt_time:.3f}s QPS={txt_qps:.2f} "
-        f"avg_batch={txt_avg_batch_sec:.4f}s ({txt_avg_batch_sec*1000:.2f}ms) shape={tuple(txt_emb.shape)} | "
+        f"avg_batch={txt_avg_batch_sec:.4f}s ({txt_avg_batch_sec*1000:.2f}ms) shape={txt_shape} | "
         f"image: n={n_images} time={img_time:.3f}s QPS={img_qps:.2f} "
-        f"avg_batch={img_avg_batch_sec:.4f}s ({img_avg_batch_sec*1000:.2f}ms) shape={tuple(img_emb.shape)}"
+        f"avg_batch={img_avg_batch_sec:.4f}s ({img_avg_batch_sec*1000:.2f}ms) shape={img_shape}"
     )
 
-    if dump_txt_emb:
+    if dump_txt_emb and txt_emb is not None:
         os.makedirs(os.path.dirname(dump_txt_emb) or ".", exist_ok=True)
         torch.save({"texts": texts, "embeddings": txt_emb}, dump_txt_emb)
         print(f"[Dump] text embeddings -> {dump_txt_emb}")
-    if dump_img_emb:
+    if dump_img_emb and img_emb is not None:
         os.makedirs(os.path.dirname(dump_img_emb) or ".", exist_ok=True)
         torch.save({"images": image_paths, "embeddings": img_emb}, dump_img_emb)
         print(f"[Dump] image embeddings -> {dump_img_emb}")
 
     rec = {
         "dataset": "flickr8k",
+        "modality": modality,
         "n_images": n_images,
         "n_texts": n_texts,
         "captions_per_image": per_img,
@@ -121,10 +164,10 @@ def eval_flickr8k_perf(
         "image_avg_batch_sec": round(img_avg_batch_sec, 6),
     }
 
-    # Optional logging (best-effort)
     if output_jsonl:
         try:
             from . import utils as _utils
+
             _utils.append_jsonl(output_jsonl, rec, {})
         except Exception:
             import json
@@ -137,6 +180,7 @@ def eval_flickr8k_perf(
     if output_csv:
         try:
             from . import utils as _utils
+
             _utils.append_csv(output_csv, rec, {})
         except Exception:
             import csv

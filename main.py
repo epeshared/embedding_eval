@@ -233,6 +233,14 @@ def parse_args():
         help="How many captions per image to embed (default 1; Flickr8k typically has 5)",
     )
 
+    p.add_argument(
+        "--flickr8k-modality",
+        type=str,
+        default="both",
+        choices=["both", "text", "image"],
+        help="Flickr8k perf modality: both|text|image (default both)",
+    )
+
     # 并发控制（目前仅用于记录和日志，不再触发多进程）
     p.add_argument(
         "--num-threads",
@@ -712,6 +720,7 @@ def main():
                         batch_size=args.batch_size,
                         max_images=args.max_samples,
                         captions_per_image=args.flickr8k_captions_per_image,
+                        modality=args.flickr8k_modality,
                         dump_img_emb=args.dump_img_emb,
                         dump_txt_emb=args.dump_txt_emb,
                         output_csv=args.output_csv,
