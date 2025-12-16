@@ -4,3 +4,8 @@ datasets/*
 *.log
 logs_pinned/*
 *.txt
+*logsbatchsize*
+logs*
+logsbatchsize*
+*.err
+*.out 

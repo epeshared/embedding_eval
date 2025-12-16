@@ -1,1 +1,0 @@
-[Init:sglang] url=http://127.0.0.1:30000, model='openai/clip-vit-base-patch32', api='v1', seed=42, debug=False, warmup=Falsex8
