@@ -191,6 +191,13 @@ def parse_args():
     p.add_argument("--output-csv", type=str, default="")
     p.add_argument("--output-jsonl", type=str, default="")
 
+    p.add_argument(
+        "--warmup",
+        type=int,
+        default=-1,
+        help="Warmup samples before timing (<=0 means auto: Yahoo uses all samples; Flickr8k uses batch_size per modality)",
+    )
+
     # perf modality
     p.add_argument(
         "--modality",
@@ -584,7 +591,7 @@ def run_unlabeled_yahoo(args, encoder) -> None:
 
     # ------------ 非 sglang-offline 或 单线程：走简单路径 ------------
     if backend != "sglang-offline" or num_threads <= 1:
-        warmup_bs = num_samples
+        warmup_bs = num_samples if args.warmup <= 0 else min(num_samples, args.warmup)
         print(f"[Yahoo] warm-up {warmup_bs} samples ...")
         try:
             _ = encoder.encode(texts[:warmup_bs], batch_size=args.batch_size)
@@ -592,8 +599,6 @@ def run_unlabeled_yahoo(args, encoder) -> None:
             print(f"[Yahoo] warm-up failed: {e}")
 
         t0 = time.time()
-        embs = encoder.encode(texts, batch_size=args.batch_size)
-        t1 = time.time()
     else:
         # ------------ sglang-offline + 多进程：每个进程一个 Engine ------------
         chunk_size = (num_samples + num_threads - 1) // num_threads
@@ -743,6 +748,8 @@ def main():
                         max_images=args.max_samples,
                         captions_per_image=args.flickr8k_captions_per_image,
                         modality=args.flickr8k_modality,
+                        warmup=args.warmup,
+                        profile=bool(args.profile),
                         dump_img_emb=args.dump_img_emb,
                         dump_txt_emb=args.dump_txt_emb,
                         output_csv=args.output_csv,

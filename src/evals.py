@@ -28,6 +28,8 @@ def eval_flickr8k_perf(
     max_images: int = -1,
     captions_per_image: int = 1,
     modality: str = "both",
+    warmup: int = -1,
+    profile: bool = False,
     dump_img_emb: str = "",
     dump_txt_emb: str = "",
     output_csv: str = "",
@@ -96,6 +98,39 @@ def eval_flickr8k_perf(
         f"(captions_per_image={per_img})"
     )
 
+    # ---------------- warm-up (best-effort) ----------------
+    warmup_bs = max(1, int(batch_size))
+    warmup_text = n_texts if warmup and warmup > 0 else warmup_bs
+    warmup_img = n_images if warmup and warmup > 0 else warmup_bs
+    if modality in ("both", "text"):
+        warmup_n = min(n_texts, warmup_text)
+        print(f"[Flickr8k] warm-up text {warmup_n} samples ...")
+        try:
+            _ = encoder.encode(texts[:warmup_n], batch_size=warmup_n)
+        except Exception as e:
+            print(f"[Flickr8k] warm-up text failed: {e}")
+    if modality in ("both", "image"):
+        warmup_n = min(n_images, warmup_img)
+        print(f"[Flickr8k] warm-up image {warmup_n} samples ...")
+        try:
+            _ = encoder.encode_images(image_paths[:warmup_n], batch_size=warmup_n)
+        except Exception as e:
+            print(f"[Flickr8k] warm-up image failed: {e}")
+
+    # ---------------- profiler (best-effort) ----------------
+    prof_started = False
+    if profile:
+        try:
+            # Prefer sglang-offline Engine profiler if available.
+            if hasattr(encoder, "engine") and hasattr(getattr(encoder, "engine"), "start_profile"):
+                encoder.engine.start_profile(record_shapes=True)
+                prof_started = True
+            elif hasattr(encoder, "start_profile"):
+                encoder.start_profile(record_shapes=True)
+                prof_started = True
+        except Exception as e:
+            print(f"[Flickr8k] start profile failed: {e}")
+
     txt_emb = None
     img_emb = None
 
@@ -138,6 +173,15 @@ def eval_flickr8k_perf(
         f"avg_batch={img_avg_batch_sec:.4f}s ({img_avg_batch_sec*1000:.2f}ms) shape={img_shape}"
     )
 
+    if profile and prof_started:
+        try:
+            if hasattr(encoder, "engine") and hasattr(getattr(encoder, "engine"), "stop_profile"):
+                encoder.engine.stop_profile()
+            elif hasattr(encoder, "stop_profile"):
+                encoder.stop_profile()
+        except Exception as e:
+            print(f"[Flickr8k] stop profile failed: {e}")
+
     if dump_txt_emb and txt_emb is not None:
         os.makedirs(os.path.dirname(dump_txt_emb) or ".", exist_ok=True)
         torch.save({"texts": texts, "embeddings": txt_emb}, dump_txt_emb)
@@ -154,6 +198,8 @@ def eval_flickr8k_perf(
         "n_texts": n_texts,
         "captions_per_image": per_img,
         "batch_size": batch_size,
+        "warmup": warmup,
+        "profile": bool(profile),
         "text_time_sec": round(txt_time, 6),
         "text_qps": txt_qps,
         "text_batches": int(txt_batches),

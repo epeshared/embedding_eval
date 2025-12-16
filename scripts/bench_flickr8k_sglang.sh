@@ -10,6 +10,8 @@ set -euo pipefail
 #   MAX_SAMPLES=1000                 # used for Flickr8k: max number of images
 #   CAPTIONS_PER_IMAGE=1             # Flickr8k typically has 5
 #   FLICKR8K_MODALITY=both            # both|text|image (default both)
+#   WARMUP=-1                        # warmup samples; <=0 uses default
+#   PROFILE=0                        # set 1/true to enable profiling
 #   FLICKR8K_IMAGES_DIR=/path/to/Flicker8k_Dataset
 #   FLICKR8K_CAPTIONS_FILE=/path/to/Flickr8k.token.txt
 #
@@ -37,6 +39,8 @@ read -r -a BATCH_LIST <<<"$BATCH_LIST_STR"
 MAX_SAMPLES="${MAX_SAMPLES:-1000}"
 CAPTIONS_PER_IMAGE="${CAPTIONS_PER_IMAGE:-1}"
 FLICKR8K_MODALITY="${FLICKR8K_MODALITY:-both}"
+WARMUP="${WARMUP:--1}"
+PROFILE="${PROFILE:-0}"
 
 RUNS_DIR="${RUNS_DIR:-$WORK_HOME/runs}"
 LOG_DIR="${LOG_DIR:-$WORK_HOME/scripts/logs}"
@@ -48,8 +52,13 @@ BASE_ARGS=(
   --flickr8k-captions-file "$FLICKR8K_CAPTIONS_FILE"
   --flickr8k-captions-per-image "$CAPTIONS_PER_IMAGE"
   --flickr8k-modality "$FLICKR8K_MODALITY"
+  --warmup "$WARMUP"
   --max-samples "$MAX_SAMPLES"
 )
+
+if [[ "${PROFILE,,}" == "1" || "${PROFILE,,}" == "true" ]]; then
+  BASE_ARGS+=(--profile)
+fi
 
 case "$MODE" in
   online|sglang-online)
