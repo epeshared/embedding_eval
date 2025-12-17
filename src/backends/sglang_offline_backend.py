@@ -1,5 +1,4 @@
-import os
-from typing import Optional, List, Any, Union
+from typing import Optional, List, Any, Union, Dict, Iterable
 import torch
 import dataclasses
 
@@ -9,6 +8,58 @@ import sglang as sgl  # type: ignore[import-untyped]
 
 class SGLangOfflineEncoder:
     """Offline embedding encoder using sglang.Engine + ServerArgs."""
+
+    @staticmethod
+    def _extract_embeddings(ret: Any) -> List[List[float]]:
+        """Normalize sglang Engine encode output into List[List[float]].
+
+        sglang has changed the Engine.encode return format across versions.
+        This helper accepts several common shapes:
+        - {"embedding": [...]} for single
+        - {"embeddings": [[...], ...]} for batch
+        - OpenAI style: {"data": [{"index": 0, "embedding": [...]}, ...]}
+        - list of {"embedding": [...]} (older)
+        - objects with attribute .embeddings
+        """
+        if ret is None:
+            return []
+
+        # dataclass / object style
+        if hasattr(ret, "embeddings"):
+            embs = getattr(ret, "embeddings")
+            if isinstance(embs, list):
+                return [list(map(float, e)) for e in embs]
+
+        # dict style
+        if isinstance(ret, dict):
+            if "embedding" in ret:
+                return [list(map(float, ret["embedding"]))]
+            if "embeddings" in ret:
+                embs = ret["embeddings"]
+                if isinstance(embs, list):
+                    return [list(map(float, e)) for e in embs]
+            if "data" in ret and isinstance(ret["data"], list):
+                rows = sorted(ret["data"], key=lambda d: (d or {}).get("index", 0))
+                out: List[List[float]] = []
+                for r in rows:
+                    if not isinstance(r, dict) or "embedding" not in r:
+                        raise RuntimeError(f"Unexpected item in Engine.encode data: {type(r)}")
+                    out.append(list(map(float, r["embedding"])))
+                return out
+
+        # list style
+        if isinstance(ret, list):
+            if not ret:
+                return []
+            if isinstance(ret[0], dict) and "embedding" in ret[0]:
+                return [list(map(float, (r or {})["embedding"])) for r in ret]
+            if isinstance(ret[0], (list, tuple)):
+                return [list(map(float, r)) for r in ret]
+
+        raise RuntimeError(
+            "Unexpected return from sglang.Engine.encode. "
+            f"type={type(ret)} value_preview={str(ret)[:2000]}"
+        )
 
     def __init__(
         self,
@@ -41,7 +92,7 @@ class SGLangOfflineEncoder:
             revision=revision,
             is_embedding=is_embedding,
             enable_torch_compile=enable_torch_compile,
-            torch_compile_max_bs=16,
+            torch_compile_max_bs=torch_compile_max_bs,
             attention_backend=attention_backend,
             log_level="error",
             **engine_extra_kwargs,         # <==== 保留扩展参数的通道
@@ -68,8 +119,14 @@ class SGLangOfflineEncoder:
         all_chunks = []
         for i in range(0, len(texts), batch_size):
             batch = texts[i: i + batch_size]
-            outputs = self.engine.encode(batch)
-            embs = torch.tensor([o["embedding"] for o in outputs])
+            ret = self.engine.encode(batch)
+            vecs = self._extract_embeddings(ret)
+            if len(vecs) != len(batch):
+                raise RuntimeError(
+                    f"sglang.Engine.encode returned {len(vecs)} embeddings for {len(batch)} inputs. "
+                    "This usually indicates a backend/model mismatch or an incompatible sglang version."
+                )
+            embs = torch.tensor(vecs, dtype=torch.float32)
             if normalize:
                 embs = torch.nn.functional.normalize(embs, p=2, dim=1)
             all_chunks.append(embs)
@@ -103,10 +160,15 @@ class SGLangOfflineEncoder:
             batch_images = images[i : i + batch_size]
             # For image-only embedding, provide a dummy prompt; sglang requires `prompt`.
             dummy_prompts = [""] * len(batch_images)
-            outputs = self.engine.encode(dummy_prompts, image_data=batch_images)
+            ret = self.engine.encode(dummy_prompts, image_data=batch_images)
+            vecs = self._extract_embeddings(ret)
+            if len(vecs) != len(batch_images):
+                raise RuntimeError(
+                    f"sglang.Engine.encode returned {len(vecs)} embeddings for {len(batch_images)} images. "
+                    "This usually indicates the model does not support image embeddings in offline mode."
+                )
 
-            # sglang returns a list of dicts: [{"embedding": [...], "meta_info": {...}}, ...]
-            embs = torch.tensor([o["embedding"] for o in outputs])
+            embs = torch.tensor(vecs, dtype=torch.float32)
             if normalize:
                 embs = torch.nn.functional.normalize(embs, p=2, dim=1)
             all_chunks.append(embs)

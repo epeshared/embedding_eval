@@ -82,9 +82,9 @@ case "$MODE" in
     DEVICE="${DEVICE:-cpu}"
 
     BACKEND_ARGS=(
-      # NOTE: sglang-offline (Engine) does not support CLIPModel multimodal processor init.
-      # For local/offline CLIP (text+image embeddings), use the repo's native CLIP backend.
-      --backend clip
+      # Offline (Engine) mode.
+      # This uses sglang.Engine locally (no HTTP server), and supports both text + image embeddings.
+      --backend sglang-offline
       --model "$MODEL_DIR"
       --device "$DEVICE"
     )

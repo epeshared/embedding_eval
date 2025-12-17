@@ -368,14 +368,6 @@ def build_encoder(args):
         if SGLangOfflineEncoder is None:
             raise RuntimeError("SGLangOfflineEncoder not available")
 
-        # sglang-offline Engine currently doesn't register a CLIP multimodal processor,
-        # so initializing it with CLIPModel crashes with a confusing error.
-        if _looks_like_clip_model(args.model):
-            raise RuntimeError(
-                "Backend 'sglang-offline' is not supported for CLIP models. "
-                "Use --backend clip for local CLIP, or --backend sglang-online to talk to a running SGLang server."
-            )
-
         if args.device == "cpu":
             attn_backend = "intel_amx"
         elif args.device == "cuda":
