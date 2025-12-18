@@ -38,6 +38,8 @@ class CLIPEncoder:
                 print("[Init:CLIP] IPEX enabled (bf16).")
             except Exception as e:
                 print(f"[Warn] IPEX optimize failed, fallback to plain PyTorch: {e}")
+                self.cpu_amp_dtype = torch.bfloat16
+                self.model.to(torch.bfloat16)
 
     @torch.inference_mode()
     def encode(self, texts: List[str], batch_size: int = 256, normalize: bool = True) -> torch.Tensor:
