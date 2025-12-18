@@ -269,6 +269,13 @@ def parse_args():
     p.add_argument("--sgl-url", type=str, default="http://127.0.0.1:30000")
     p.add_argument("--sgl-api", type=str, default="v1", choices=["v1", "native", "openai"])
     p.add_argument("--sgl-api-key", type=str, default="")
+    p.add_argument(
+        "--sgl-image-transport",
+        type=str,
+        default="data-url",
+        choices=["data-url", "base64", "path/url"],
+        help="How to send images to SGLang /v1/embeddings: data-url (default), base64, or path/url.",
+    )
     p.add_argument("--profile", action="store_true")
     p.add_argument("--profile-steps", type=int, default=20)
     p.add_argument("--profile-output-dir", type=str, default="./sglang_logs")
@@ -362,6 +369,7 @@ def build_encoder(args):
             model=args.model,
             api=args.sgl_api,
             api_key=args.sgl_api_key,
+            image_transport=args.sgl_image_transport,
         )
 
     elif backend == "sglang-offline":

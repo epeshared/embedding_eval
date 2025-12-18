@@ -60,3 +60,65 @@ Batch benchmark for Flickr8k text/image embeddings via `main.py`.
   MAX_SAMPLES=500 \
   ./bench_flickr8k_sglang.sh offline
   ```
+
+## Verify Flickr8k embeddings (correctness)
+
+`bench_flickr8k_sglang.sh` focuses on throughput and writes CSV/JSONL timing records.
+To *validate that the produced image/text embeddings are correct*, use the verification scripts below.
+
+### Recommended: one-shot run + verify (dump .pt + Recall@K)
+
+Use `run_and_verify_flickr8k_sglang.sh` to:
+
+1) run `main.py` with `--dump-img-emb/--dump-txt-emb` to save embeddings to `runs/*.pt`
+2) run retrieval verification (sanity stats + Recall@K)
+
+Examples:
+
+- Offline (Engine) embeddings + verify:
+
+  ```bash
+  BATCH_SIZE=64 MAX_SAMPLES=200 CAPTIONS_PER_IMAGE=1 \
+  ./scripts/run_and_verify_flickr8k_sglang.sh offline
+  ```
+
+- Online (HTTP server) embeddings + verify:
+
+  ```bash
+  BATCH_SIZE=64 MAX_SAMPLES=200 CAPTIONS_PER_IMAGE=1 \
+  ./scripts/run_and_verify_flickr8k_sglang.sh online
+  ```
+
+Notes:
+
+- Keep `CAPTIONS_PER_IMAGE` consistent across generation and verification.
+- If you want Flickr8k's full setting, set `CAPTIONS_PER_IMAGE=5`.
+- For offline image embedding, ensure `sglang-offline` is actually used (some setups may fall back to the local `clip` backend in `bench_flickr8k_sglang.sh`).
+
+### Verify existing .pt files (sanity + Recall@K)
+
+If you already have `.pt` dumps from `main.py`, run `verify_flickr8k_embeddings.sh`:
+
+```bash
+./scripts/verify_flickr8k_embeddings.sh \
+  --img-pt runs/flickr8k_offline_cpu_bs64_n200_cpi1_img.pt \
+  --txt-pt runs/flickr8k_offline_cpu_bs64_n200_cpi1_txt.pt \
+  --captions-per-image 1 \
+  --k "1,5,10" \
+  --max-n 200
+```
+
+This prints:
+
+- NaN/Inf checks and embedding norm statistics
+- `paired_sim` sanity (paired text-image similarity should exceed overall average)
+- Retrieval `Recall@K` for **Text→Image** and **Image→Text**
+
+### Inspect dump files (quick sanity)
+
+To quickly inspect tensor shapes, norms, and a few rows:
+
+```bash
+python ./scripts/inspect_pt.py runs/flickr8k_offline_cpu_bs64_n200_cpi1_img.pt --cols 10 --precision 6
+python ./scripts/inspect_pt.py runs/flickr8k_offline_cpu_bs64_n200_cpi1_txt.pt --cols 10 --precision 6
+```

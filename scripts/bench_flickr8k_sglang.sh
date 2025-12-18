@@ -81,14 +81,53 @@ case "$MODE" in
     MODEL_DIR="${MODEL_DIR:-/home/xtang/models/openai/clip-vit-base-patch32/}"
     DEVICE="${DEVICE:-cpu}"
 
-    BACKEND_ARGS=(
-      # Offline (Engine) mode.
-      # This uses sglang.Engine locally (no HTTP server), and supports both text + image embeddings.
-      --backend sglang-offline
-      --model "$MODEL_DIR"
-      --device "$DEVICE"
-    )
-    MODE_TAG="offline_${DEVICE}"
+    echo "[Probe] checking if sglang-offline is usable..."
+    if python - <<'PY'
+import importlib
+import sys
+
+try:
+    # sglang-offline needs the sglang runtime (srt/Engine) plus multimodal processors.
+    import sglang.srt  # noqa: F401
+    import vllm  # noqa: F401
+
+    # Ensure the CLIP multimodal processor module imports (this will fail if optional deps are missing
+    # or the platform cannot load required kernels).
+    importlib.import_module("sglang.srt.multimodal.processors.clip")
+
+    # Ensure the processor registry contains CLIPModel.
+    from sglang.srt.managers import multimodal_processor as mp
+
+    mp.import_processors("sglang.srt.multimodal.processors")
+    has_clip = any(getattr(k, "__name__", "") == "CLIPModel" for k in mp.PROCESSOR_MAPPING.keys())
+    if not has_clip:
+        raise RuntimeError(
+            "CLIPModel multimodal processor not registered; sglang-offline can't encode images"
+        )
+except Exception as e:
+    print(f"SGLANG_OFFLINE_UNAVAILABLE: {e}", file=sys.stderr)
+    sys.exit(1)
+
+sys.exit(0)
+PY
+    then
+      BACKEND_ARGS=(
+        # Offline (Engine) mode.
+        # This uses sglang.Engine locally (no HTTP server), and supports both text + image embeddings.
+        --backend sglang-offline
+        --model "$MODEL_DIR"
+        --device "$DEVICE"
+      )
+      MODE_TAG="offline_${DEVICE}_sglang"
+    else
+      echo "[Warn] sglang-offline deps not available; falling back to local clip backend." >&2
+      BACKEND_ARGS=(
+        --backend clip
+        --model "$MODEL_DIR"
+        --device "$DEVICE"
+      )
+      MODE_TAG="offline_${DEVICE}_clip"
+    fi
     ;;
 
   *)

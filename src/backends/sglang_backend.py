@@ -112,7 +112,17 @@ class SGLangEncoder:
         return [list(map(float, r["embedding"])) for r in rows]
 
     def _encode_v1_multimodal_any(self, inputs: Union[Dict[str, Any], List[Dict[str, Any]]]) -> List[List[float]]:
-        """Call /v1/embeddings with multimodal items (e.g., {"text": ...} or {"image": ...})."""
+        """Call /v1/embeddings with multimodal items.
+
+        SGLang's OpenAI-compatible embeddings endpoint accepts:
+          - input=str or List[str] (text-only)
+          - input=List[MultimodalEmbeddingInput] where each item is a dict like:
+              {"text": "...", "image": "..."}
+
+        Note: image-only items like {"image": ...} are NOT part of the declared schema in
+        sglang (it expects keys {text,image}), so always include a text field (can be a
+        dummy padding string) when sending images.
+        """
         url = f"{self.base_url}/v1/embeddings"
         session = self.session
         assert session is not None
@@ -136,9 +146,27 @@ class SGLangEncoder:
 
         - If image_transport is 'path/url', pass through strings.
         - If image_transport is 'data-url' and img is a local file path, convert to data URL.
+        - If image_transport is 'base64' and img is a local file path, convert to raw base64.
         - If img is already a data URL / URL / base64-ish string, pass through.
         """
         if self.image_transport == "path/url":
+            return img
+
+        if self.image_transport == "base64":
+            if isinstance(img, str):
+                s = img.strip()
+                if s.startswith("data:"):
+                    # data:<mime>;base64,<payload>
+                    comma = s.find(",")
+                    return s[comma + 1 :] if comma >= 0 else s
+                if s.startswith("http://") or s.startswith("https://"):
+                    return s
+                if os.path.exists(s) and os.path.isfile(s):
+                    with open(s, "rb") as f:
+                        return base64.b64encode(f.read()).decode("ascii")
+                return s
+            if isinstance(img, (bytes, bytearray)):
+                return base64.b64encode(bytes(img)).decode("ascii")
             return img
 
         # data-url
@@ -233,9 +261,37 @@ class SGLangEncoder:
         assert session is not None
 
         out: List[torch.Tensor] = []
+        probed = False
         for i in range(0, len(images), batch_size):
             batch = images[i : i + batch_size]
-            inputs = [{"image": self._image_to_repr(x)} for x in batch]
+            # OpenAI-compatible schema expects keys {text, image}; use a dummy text so
+            # the server treats this as multimodal embedding and wires image_data.
+            inputs = [{"text": "padding", "image": self._image_to_repr(x)} for x in batch]
+
+            # Fail fast if the server is ignoring image inputs.
+            # Symptom: a clearly invalid image path/url still returns 200 and the embedding
+            # matches a valid image embedding (i.e., only the dummy text is used).
+            if not probed and len(inputs) >= 1:
+                probed = True
+                try:
+                    probe_inputs = [inputs[0], {"text": "padding", "image": "/no/such/file.jpg"}]
+                    probe_vecs = self._encode_v1_multimodal_any(probe_inputs)
+                    if len(probe_vecs) >= 2:
+                        a = torch.tensor(probe_vecs[0], dtype=torch.float32)
+                        b = torch.tensor(probe_vecs[1], dtype=torch.float32)
+                        if torch.allclose(a, b, atol=0.0, rtol=0.0):
+                            raise RuntimeError(
+                                "SGLang server appears to ignore image inputs for /v1/embeddings (multimodal). "
+                                "A nonexistent image path produced the same embedding as a real image. "
+                                "This commonly happens when serving CLIP in embedding mode where image embeddings are not supported. "
+                                "Use a multimodal model/server configuration that actually consumes images, or use a local CLIP/sglang-offline backend for CLIP image embeddings."
+                            )
+                except RuntimeError:
+                    raise
+                except Exception:
+                    # If probing fails due to transient HTTP issues, don't block the main run.
+                    pass
+
             vecs = self._encode_v1_multimodal_any(inputs)
             t = torch.tensor(vecs, dtype=torch.float32)
             out.append(torch.nn.functional.normalize(t, p=2, dim=1))

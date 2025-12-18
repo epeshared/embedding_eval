@@ -58,6 +58,7 @@ python -m sglang.launch_server \
   --trust-remote-code \
   --disable-overlap-schedule \
   --is-embedding \
+  --enable-multimodal \
   --device cpu \
   --host 0.0.0.0 --port 30000 \
   --skip-server-warmup \
