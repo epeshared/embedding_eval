@@ -154,6 +154,7 @@ for BATCH_SIZE in "${BATCH_LIST[@]}"; do
     --batch-size "$BATCH_SIZE" \
     --output-csv "$OUT_CSV" \
     --output-jsonl "$OUT_JSONL" \
+    --use-ipex true\
     "${BASE_ARGS[@]}" \
     2>&1 | tee "$LOG_FILE"
 
