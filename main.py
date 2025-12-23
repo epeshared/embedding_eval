@@ -19,7 +19,7 @@ from typing import List, Optional, Dict, Any
 
 import torch
 import numpy as np
-import multiprocessing as mp
+import multiprocessing as mp  # noqa: F401  (reserved)
 
 
 # ---- Robust imports: prefer src.*, fall back to local modules ----
@@ -211,9 +211,16 @@ def parse_args():
     p.add_argument("--yahoo-jsonl", type=str, default="")
     p.add_argument("--yahoo-mode", type=str, default="q", choices=["q", "q+a"])
     p.add_argument("--yahoo-max", type=int, default=10000)
+
+    # legacy dumps: vector-only (binary or pure numeric text)
     p.add_argument("--dump-emb", type=str, default="")
     p.add_argument("--dump-img-emb", type=str, default="")
     p.add_argument("--dump-txt-emb", type=str, default="")
+
+    # NEW: dumps with idx / optional text (pure text formats)
+    p.add_argument("--dump-emb-tsv", type=str, default="", help="Write embeddings to TSV with index (and optional text).")
+    p.add_argument("--dump-emb-jsonl", type=str, default="", help="Write embeddings to JSONL with index (and optional text).")
+    p.add_argument("--dump-emb-with-text", type=str, default="False", help="Whether to include original text in TSV/JSONL.")
 
     # image throughput input
     p.add_argument("--image-dir", type=str, default="", help="Directory containing images for image embedding benchmark")
@@ -303,6 +310,103 @@ def parse_args():
 
 def to_bool(x: str) -> bool:
     return str(x).lower() in ("1", "true", "yes", "on")
+
+
+def save_embeddings(t: torch.Tensor, path: str) -> None:
+    """
+    Save embeddings to file, format inferred from suffix:
+      - .pt/.pth: torch.save
+      - .npy: np.save
+      - .txt/.tsv/.csv: pure numeric text, one vector per line
+    """
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    ext = os.path.splitext(path)[1].lower()
+    t_cpu = t.detach().cpu()
+
+    if ext in (".pt", ".pth", ""):
+        torch.save(t_cpu, path)
+        return
+
+    if ext == ".npy":
+        np.save(path, t_cpu.numpy())
+        return
+
+    if ext in (".txt", ".tsv", ".csv"):
+        arr = t_cpu.numpy()
+        if ext == ".tsv":
+            delimiter = "\t"
+        elif ext == ".csv":
+            delimiter = ","
+        else:
+            delimiter = " "  # .txt default
+        np.savetxt(path, arr, fmt="%.6g", delimiter=delimiter)
+        return
+
+    raise ValueError(f"Unknown embedding dump format for path={path!r}")
+
+
+def dump_emb_tsv(
+    texts: List[str],
+    embs: torch.Tensor,
+    path: str,
+    include_text: bool = False,
+    float_fmt: str = "%.6g",
+) -> None:
+    """
+    TSV: idx [text] d0 d1 ... d{D-1}
+    """
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    arr = embs.detach().cpu().numpy()
+    if arr.ndim != 2:
+        raise ValueError(f"Expected 2D embeddings, got shape={arr.shape}")
+    if arr.shape[0] != len(texts):
+        raise ValueError(f"embs rows {arr.shape[0]} != texts {len(texts)}")
+
+    dim = int(arr.shape[1])
+    with open(path, "w", encoding="utf-8") as f:
+        cols = ["idx"]
+        if include_text:
+            cols.append("text")
+        cols += [f"d{i}" for i in range(dim)]
+        f.write("\t".join(cols) + "\n")
+
+        for i, vec in enumerate(arr):
+            row = [str(i)]
+            if include_text:
+                # avoid breaking TSV format
+                t = (texts[i] or "").replace("\t", " ").replace("\n", "\\n").replace("\r", "\\r")
+                row.append(t)
+            row += [float_fmt % float(x) for x in vec.tolist()]
+            f.write("\t".join(row) + "\n")
+
+
+def dump_emb_jsonl(
+    texts: List[str],
+    embs: torch.Tensor,
+    path: str,
+    include_text: bool = False,
+    float_round: Optional[int] = 6,
+) -> None:
+    """
+    JSONL: {"idx": i, "text": "...", "embedding": [..]}
+    """
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    arr = embs.detach().cpu().numpy()
+    if arr.ndim != 2:
+        raise ValueError(f"Expected 2D embeddings, got shape={arr.shape}")
+    if arr.shape[0] != len(texts):
+        raise ValueError(f"embs rows {arr.shape[0]} != texts {len(texts)}")
+
+    def _maybe_round(v: float) -> float:
+        return round(float(v), int(float_round)) if (float_round is not None) else float(v)
+
+    with open(path, "w", encoding="utf-8") as f:
+        for i, vec in enumerate(arr):
+            rec: Dict[str, Any] = {"idx": i}
+            if include_text:
+                rec["text"] = texts[i]
+            rec["embedding"] = [float(x) for x in vec.tolist()]
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
 
 def _detect_local_hf_architectures(model_path_or_id: str) -> List[str]:
@@ -518,8 +622,7 @@ def run_unlabeled_images(args, encoder) -> None:
     )
 
     if args.dump_img_emb:
-        os.makedirs(os.path.dirname(args.dump_img_emb) or ".", exist_ok=True)
-        torch.save(embs.cpu(), args.dump_img_emb)
+        save_embeddings(embs, args.dump_img_emb)
         print(f"[Save] image embeddings -> {args.dump_img_emb}")
 
     if args.output_jsonl:
@@ -605,6 +708,7 @@ def run_unlabeled_yahoo(args, encoder) -> None:
             encoder.engine.start_profile(record_shapes=True)
         if args.backend == "sglang-online":
             encoder.start_profile(record_shapes=True)
+
     # 批次级计时：按 batch_size 切分，逐批调用 encode，并统计每个 batch 的耗时
     batch_size = max(1, int(args.batch_size))
     embs_list = []
@@ -617,12 +721,12 @@ def run_unlabeled_yahoo(args, encoder) -> None:
         bt0 = time.time()
         batch_embs = encoder.encode(batch_texts, batch_size=bs)
         bt1 = time.time()
-        batch_dt = bt1 - bt0
-        batch_times.append(batch_dt)
+        batch_times.append(bt1 - bt0)
         embs_list.append(batch_embs)
 
     embs = torch.cat(embs_list, dim=0) if embs_list else torch.empty(0)
     t1 = time.time()
+
     if args.profile:
         if args.backend == "sglang-offline":
             encoder.engine.stop_profile()
@@ -649,11 +753,21 @@ def run_unlabeled_yahoo(args, encoder) -> None:
         f"max_batch_time={max_batch_time:.6f}s"
     )
 
-    # dump emb
+    include_text = to_bool(getattr(args, "dump_emb_with_text", "False"))
+
+    # dump vector-only embeddings (binary or pure numeric text depending on suffix)
     if args.dump_emb:
-        os.makedirs(os.path.dirname(args.dump_emb) or ".", exist_ok=True)
-        torch.save(embs.cpu(), args.dump_emb)
+        save_embeddings(embs, args.dump_emb)
         print(f"[Save] embeddings -> {args.dump_emb}")
+
+    # dump embeddings with idx / optional text
+    if getattr(args, "dump_emb_tsv", ""):
+        dump_emb_tsv(texts, embs, args.dump_emb_tsv, include_text=include_text)
+        print(f"[Save] embeddings (tsv) -> {args.dump_emb_tsv}")
+
+    if getattr(args, "dump_emb_jsonl", ""):
+        dump_emb_jsonl(texts, embs, args.dump_emb_jsonl, include_text=include_text)
+        print(f"[Save] embeddings (jsonl) -> {args.dump_emb_jsonl}")
 
     # log jsonl
     if args.output_jsonl:

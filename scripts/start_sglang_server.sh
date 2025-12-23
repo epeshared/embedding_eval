@@ -7,9 +7,9 @@ echo "WORK_HOME=$WORK_HOME"
 ###############################################
 #        ✅ 仅需在这里配置模型路径即可
 ###############################################
-MODEL_DIR="/home/xtang/models/openai/clip-vit-base-patch32"
+# MODEL_DIR="/home/xtang/models/openai/clip-vit-base-patch32"
 # MODEL_DIR="$WORK_HOME/models/openai/clip-vit-large-patch14-336"
-# MODEL_DIR="/home/xtang/models/Qwen/Qwen3-Embedding-4B"
+MODEL_DIR="/home/xtang/models/Qwen/Qwen3-Embedding-4B"
 # MODEL_DIR="/home/xtang/models/Qwen/Qwen3-Embedding-0.6B"
 ###############################################
 echo "Using model: $MODEL_DIR"
